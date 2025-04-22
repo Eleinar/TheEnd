@@ -87,6 +87,7 @@ class LoginWindow(QDialog):
         self.setWindowTitle("Вход")
         self.setFixedSize(300, 120)
         self.setWindowIcon(QIcon("icon.png"))
+        self.session = Session()
         layout = QFormLayout()
         self.login_input = QLineEdit(self)
         self.login_input.setMaxLength(50)
@@ -603,7 +604,7 @@ class AddOrderDialog(QDialog):
     def __init__(self, parent=None, current_user_id=None):
         super().__init__(parent)
         self.setWindowTitle("Добавить заказ")
-        self.setFixedSize(400, 300)
+        self.setFixedSize(600,500)
         self.setWindowIcon(QIcon("icon.png"))
         self.session = Session()
         self.current_user_id = current_user_id
