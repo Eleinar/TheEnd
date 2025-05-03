@@ -140,6 +140,6 @@ class OrderItem(Base):
     product = relationship("FinishedProduct", back_populates="order_items")
 
 # Подключение к базе и создание таблиц
-engine = create_engine('postgresql://postgres:postgres@82.202.138.183:5432/postgres', echo=True)
+engine = create_engine('postgresql://postgres:p0sTgr3s@82.202.138.183:5432/postgres', echo=True)
 Base.metadata.create_all(engine)
 Session = sessionmaker(bind=engine)

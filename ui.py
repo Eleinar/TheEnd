@@ -5,7 +5,9 @@ from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                                QMessageBox, QFileDialog)
 from PySide6.QtCore import QDate
 from PySide6.QtGui import QIcon
+from sqlalchemy import func
 from models import Session, User, RawMaterial, Recipe, Batch, FinishedProduct, Client, Order, OrderItem, UserRole, BatchStatus, ClientType, OrderStatus
+from datetime import datetime
 
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
@@ -116,18 +118,15 @@ class LoginWindow(QDialog):
             QMessageBox.warning(self, "Ошибка", "Пароль должен содержать минимум 6 символов")
             return
     
-        # Проверяем, существует ли пользователь с таким логином
         user = self.session.query(User).filter_by(login=login).first()
         if not user:
             QMessageBox.warning(self, "Ошибка", "Неверный логин или пароль")
             return
     
-        # Проверяем пароль
         if not bcrypt.checkpw(password.encode('utf-8'), user.password.encode('utf-8')):
             QMessageBox.warning(self, "Ошибка", "Неверный логин или пароль")
             return
     
-        # Сохраняем ID пользователя
         self.user_id = user.user_id
         self.accept()
 
@@ -482,7 +481,6 @@ class CreateBatchDialog(QDialog):
             QMessageBox.warning(self, "Ошибка", "Выберите рецепт, объем > 0, цена >= 0")
             return
 
-        # Проверка остатков меда (пример: 1 л = 1 кг меда)
         honey = self.session.query(RawMaterial).filter_by(name="Мед").first()
         if not honey or honey.quantity < volume:
             QMessageBox.warning(self, "Ошибка", f"Недостаточно меда (нужно {volume} кг, есть {honey.quantity if honey else 0} кг)")
@@ -495,12 +493,11 @@ class CreateBatchDialog(QDialog):
             end_date=self.start_date.date().addDays(14).toString("yyyy-MM-dd"),
             status=BatchStatus.FERMENTING.value,
             user_id=self.current_user_id,
-            price_per_liter=price  # Сохраняем цену в таблице batches
+            price_per_liter=price
         )
         self.session.add(batch)
         self.session.commit()
 
-        # Списание меда
         honey.quantity -= volume
         self.session.commit()
 
@@ -690,7 +687,6 @@ class AddOrderDialog(QDialog):
             QMessageBox.warning(self, "Ошибка", "Выберите клиента")
             return
 
-        # Проверка доступного объема продукции
         for row in range(self.items_table.rowCount()):
             product_text = self.items_table.cellWidget(row, 0).currentText()
             product_id = int(product_text.split(" - ")[0].replace("Продукт ", ""))
@@ -726,7 +722,7 @@ class AddOrderDialog(QDialog):
             )
             self.session.add(item)
             product = self.session.query(FinishedProduct).filter_by(product_id=product_id).first()
-            product.available_volume -= volume  # Списание продукции
+            product.available_volume -= volume
         self.session.commit()
         order.total_order_cost = sum(i.total_cost for i in order.order_items)
         self.session.commit()
@@ -803,7 +799,7 @@ class MainWindow(QMainWindow):
             self.raw_table.setItem(i, 0, QTableWidgetItem(m.name))
             self.raw_table.setItem(i, 1, QTableWidgetItem(f"{m.quantity} кг"))
             self.raw_table.setItem(i, 2, QTableWidgetItem(f"{m.cost} руб/кг"))
-            self.raw_table.setItem(i, 3, QTableWidgetItem(m.purchase_date))
+            self.raw_table.setItem(i, 3, QTableWidgetItem(str(m.purchase_date)))
 
     def show_edit_raw_material(self):
         selected_row = self.raw_table.currentRow()
@@ -862,7 +858,7 @@ class MainWindow(QMainWindow):
         self.prod_tab.addTab(batch_tab, "Партии")
         batch_layout = QVBoxLayout(batch_tab)
         self.batch_search = QLineEdit()
-        self.batch_search.setPlaceholderText("Поиск по статусу или дате...")
+        self.batch_search.setPlaceholderText("Поиск по статусу...")
         self.batch_search.textChanged.connect(self.update_batch_table)
         batch_layout.addWidget(self.batch_search)
         self.batch_table = QTableWidget()
@@ -910,9 +906,7 @@ class MainWindow(QMainWindow):
     def update_batch_table(self):
         search_text = self.batch_search.text().lower()
         batches = self.session.query(Batch).filter(
-            (Batch.status.ilike(f"%{search_text}%")) | 
-            (Batch.start_date.ilike(f"%{search_text}%")) | 
-            (Batch.end_date.ilike(f"%{search_text}%"))
+            (Batch.status.ilike(f"%{search_text}%"))
         ).all()
         self.batch_table.setRowCount(len(batches))
         for i, b in enumerate(batches):
@@ -923,60 +917,104 @@ class MainWindow(QMainWindow):
             status_combo.setCurrentText(b.status)
             status_combo.currentTextChanged.connect(lambda text, batch_id=b.batch_id: self.update_batch_status(batch_id, text))
             self.batch_table.setCellWidget(i, 2, status_combo)
-            self.batch_table.setItem(i, 3, QTableWidgetItem(b.start_date))
-            self.batch_table.setItem(i, 4, QTableWidgetItem(b.end_date))
+            self.batch_table.setItem(i, 3, QTableWidgetItem(str(b.start_date)))
+            self.batch_table.setItem(i, 4, QTableWidgetItem(str(b.end_date)))
 
     def update_batch_status(self, batch_id, status):
         batch = self.session.query(Batch).filter_by(batch_id=batch_id).first()
-        if batch.status != status:  # Проверяем, изменился ли статус
+        if batch.status != status:
             batch.status = status
-            if status == BatchStatus.READY.value:  # Если партия готова
-                # Проверяем, нет ли уже готовой продукции для этой партии
+            if status == BatchStatus.READY.value:
                 existing_product = self.session.query(FinishedProduct).filter_by(batch_id=batch.batch_id).first()
                 if not existing_product:
-                    # Создаем готовую продукцию с ценой из batches
                     finished_product = FinishedProduct(
                         batch_id=batch.batch_id,
                         volume=batch.volume,
                         available_volume=batch.volume,
-                        production_date=batch.end_date,
-                        price_per_liter=batch.price_per_liter  # Используем цену из партии
+                        production_date=str(batch.end_date),
+                        price_per_liter=batch.price_per_liter
                     )
                     self.session.add(finished_product)
             self.session.commit()
-            self.update_product_table()  # Обновляем таблицу продукции
+            self.update_product_table()
         self.update_notifications()
 
     def init_products(self):
         self.product_tab = QWidget()
         self.tabs.addTab(self.product_tab, "Продукция")
         product_layout = QVBoxLayout(self.product_tab)
+
+        # Добавляем элементы для фильтрации по диапазону дат
+        self.start_date_edit = QDateEdit()
+        self.start_date_edit.setDisplayFormat("yyyy-MM-dd")
+        self.start_date_edit.setDate(QDate.currentDate().addMonths(-1))
+        self.start_date_edit.dateChanged.connect(self.update_product_table)
+
+        self.end_date_edit = QDateEdit()
+        self.end_date_edit.setDisplayFormat("yyyy-MM-dd")
+        self.end_date_edit.setDate(QDate.currentDate())
+        self.end_date_edit.dateChanged.connect(self.update_product_table)
+
         self.product_search = QLineEdit()
-        self.product_search.setPlaceholderText("Поиск по дате или цене...")
+        self.product_search.setPlaceholderText("Поиск по дате (гггг-мм-дд) или цене...")
         self.product_search.textChanged.connect(self.update_product_table)
+
+        product_layout.addWidget(QLabel("Дата начала:"))
+        product_layout.addWidget(self.start_date_edit)
+        product_layout.addWidget(QLabel("Дата окончания:"))
+        product_layout.addWidget(self.end_date_edit)
         product_layout.addWidget(self.product_search)
+
         self.product_table = QTableWidget()
         self.product_table.setColumnCount(5)
         self.product_table.setHorizontalHeaderLabels(["№", "Объем", "Доступно", "Дата розлива", "Цена/л"])
         self.update_product_table()
         product_layout.addWidget(self.product_table)
+
         product_button = QPushButton("Обновить")
         product_button.clicked.connect(self.update_product_table)
         product_layout.addWidget(product_button)
 
     def update_product_table(self):
-        search_text = self.product_search.text().lower()
-        products = self.session.query(FinishedProduct).filter(
-            (FinishedProduct.production_date.ilike(f"%{search_text}%")) | 
-            (FinishedProduct.price_per_liter.ilike(f"%{search_text}%"))
-        ).all()
-        self.product_table.setRowCount(len(products))
-        for i, p in enumerate(products):
-            self.product_table.setItem(i, 0, QTableWidgetItem(str(p.product_id)))
-            self.product_table.setItem(i, 1, QTableWidgetItem(f"{p.volume} л"))
-            self.product_table.setItem(i, 2, QTableWidgetItem(f"{p.available_volume} л"))
-            self.product_table.setItem(i, 3, QTableWidgetItem(p.production_date))
-            self.product_table.setItem(i, 4, QTableWidgetItem(f"{p.price_per_liter} руб"))
+        start_date = self.start_date_edit.date().toString("yyyy-MM-dd")
+        end_date = self.end_date_edit.date().toString("yyyy-MM-dd")
+        search_text = self.product_search.text().strip().lower()
+
+        try:
+            # Базовый запрос с фильтром по диапазону дат
+            query = self.session.query(FinishedProduct).filter(
+                FinishedProduct.production_date.between(start_date, end_date)
+            )
+
+            # Дополнительный фильтр по введенному тексту
+            if search_text:
+                # Попробуем интерпретировать search_text как дату
+                try:
+                    search_date = datetime.strptime(search_text, '%Y-%m-%d').date()
+                    query = query.filter(FinishedProduct.production_date == search_date)
+                except ValueError:
+                    # Если это не дата, попробуем интерпретировать как цену
+                    try:
+                        search_price = float(search_text)
+                        query = query.filter(FinishedProduct.price_per_liter == search_price)
+                    except ValueError:
+                        # Если текст не является ни датой, ни ценой, игнорируем фильтр
+                        pass
+
+            products = query.all()
+
+            # Обновляем таблицу
+            self.product_table.setRowCount(len(products))
+            for i, p in enumerate(products):
+                self.product_table.setItem(i, 0, QTableWidgetItem(str(p.product_id)))
+                self.product_table.setItem(i, 1, QTableWidgetItem(f"{p.volume} л"))
+                self.product_table.setItem(i, 2, QTableWidgetItem(f"{p.available_volume} л"))
+                self.product_table.setItem(i, 3, QTableWidgetItem(str(p.production_date)))
+                self.product_table.setItem(i, 4, QTableWidgetItem(f"{p.price_per_liter} руб"))
+
+        except Exception as e:
+            QMessageBox.warning(self, "Ошибка", f"Ошибка при обновлении таблицы: {str(e)}")
+            self.product_table.setRowCount(0)
 
     def init_orders(self):
         self.order_tab = QTabWidget()
@@ -1010,7 +1048,7 @@ class MainWindow(QMainWindow):
         self.order_tab.addTab(order_tab, "Заказы")
         order_layout = QVBoxLayout(order_tab)
         self.order_search = QLineEdit()
-        self.order_search.setPlaceholderText("Поиск по клиенту или дате...")
+        self.order_search.setPlaceholderText("Поиск по клиенту...")
         self.order_search.textChanged.connect(self.update_order_table)
         order_layout.addWidget(self.order_search)
         self.order_table = QTableWidget()
@@ -1060,14 +1098,13 @@ class MainWindow(QMainWindow):
     def update_order_table(self):
         search_text = self.order_search.text().lower()
         orders = self.session.query(Order).join(Client).filter(
-            (Client.name.ilike(f"%{search_text}%")) | 
-            (Order.order_date.ilike(f"%{search_text}%"))
+            Client.name.ilike(f"%{search_text}%")
         ).all()
         self.order_table.setRowCount(len(orders))
         for i, o in enumerate(orders):
             self.order_table.setItem(i, 0, QTableWidgetItem(str(o.order_id)))
             self.order_table.setItem(i, 1, QTableWidgetItem(o.client.name))
-            self.order_table.setItem(i, 2, QTableWidgetItem(o.order_date))
+            self.order_table.setItem(i, 2, QTableWidgetItem(str(o.order_date)))
             status_combo = QComboBox()
             status_combo.addItems([s.value for s in OrderStatus])
             status_combo.setCurrentText(o.status)
@@ -1107,13 +1144,11 @@ class MainWindow(QMainWindow):
         start_date = self.start_date.date().toString("yyyy-MM-dd")
         end_date = self.end_date.date().toString("yyyy-MM-dd")
         
-        # Путь к шрифту DejaVu Sans (укажи свой путь или скачай шрифт)
-        font_path = "DejaVuSans.ttf"  # Например, помести файл в папку проекта
+        font_path = "DejaVuSans.ttf"
         if not os.path.exists(font_path):
             QMessageBox.critical(self, "Ошибка", "Шрифт DejaVuSans.ttf не найден. Укажи правильный путь.")
             return
         
-        # Диалог выбора места сохранения
         default_filename = f"report_{report_type.lower().replace(' ', '_')}_{start_date}_to_{end_date}.pdf"
         output_file, _ = QFileDialog.getSaveFileName(
             self,
@@ -1122,23 +1157,20 @@ class MainWindow(QMainWindow):
             "PDF Files (*.pdf)"
         )
         if not output_file:
-            return  # Пользователь отменил выбор
-        
-        # Регистрация шрифта
+            return
+
         pdfmetrics.registerFont(TTFont("DejaVuSans", font_path))
         
-        # Создание PDF
         c = canvas.Canvas(output_file, pagesize=A4)
         c.setFont("DejaVuSans", 12)
         width, height = A4
 
-        # Заголовок
         c.setFont("DejaVuSans", 16)
         c.drawCentredString(width / 2, height - 40, f"Отчет: {report_type}")
         c.setFont("DejaVuSans", 12)
         c.drawCentredString(width / 2, height - 60, f"Период: {start_date} - {end_date}")
         
-        y = height - 100  # Начальная позиция для таблицы
+        y = height - 100
         line_height = 20
 
         if report_type == "Остатки сырья":
