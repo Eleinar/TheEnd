@@ -3,17 +3,18 @@ from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                                QLineEdit, QPushButton, QTabWidget, QTableWidget, QTableWidgetItem, 
                                QComboBox, QDialog, QLabel, QFormLayout, QDoubleSpinBox, QDateEdit,
                                QMessageBox, QFileDialog)
-from PySide6.QtCore import QDate
-from PySide6.QtGui import QIcon
+from PySide6.QtCore import QDate, Qt
+from PySide6.QtGui import QIcon, QPixmap
 from sqlalchemy import func
 from models import Session, User, RawMaterial, Recipe, Batch, FinishedProduct, Client, Order, OrderItem, UserRole, BatchStatus, ClientType, OrderStatus
 from datetime import datetime
+import matplotlib.pyplot as plt
+import os
 
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
-import os
 
 APP_STYLE = """
     QWidget {
@@ -756,6 +757,7 @@ class MainWindow(QMainWindow):
             self.init_products()
             self.init_orders()
             self.init_reports()
+            self.init_charts()
         elif self.role == UserRole.ADMIN:
             self.init_users()
 
@@ -944,7 +946,6 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.product_tab, "Продукция")
         product_layout = QVBoxLayout(self.product_tab)
 
-        # Добавляем элементы для фильтрации по диапазону дат
         self.start_date_edit = QDateEdit()
         self.start_date_edit.setDisplayFormat("yyyy-MM-dd")
         self.start_date_edit.setDate(QDate.currentDate().addMonths(-1))
@@ -981,29 +982,23 @@ class MainWindow(QMainWindow):
         search_text = self.product_search.text().strip().lower()
 
         try:
-            # Базовый запрос с фильтром по диапазону дат
             query = self.session.query(FinishedProduct).filter(
                 FinishedProduct.production_date.between(start_date, end_date)
             )
 
-            # Дополнительный фильтр по введенному тексту
             if search_text:
-                # Попробуем интерпретировать search_text как дату
                 try:
                     search_date = datetime.strptime(search_text, '%Y-%m-%d').date()
                     query = query.filter(FinishedProduct.production_date == search_date)
                 except ValueError:
-                    # Если это не дата, попробуем интерпретировать как цену
                     try:
                         search_price = float(search_text)
                         query = query.filter(FinishedProduct.price_per_liter == search_price)
                     except ValueError:
-                        # Если текст не является ни датой, ни ценой, игнорируем фильтр
                         pass
 
             products = query.all()
 
-            # Обновляем таблицу
             self.product_table.setRowCount(len(products))
             for i, p in enumerate(products):
                 self.product_table.setItem(i, 0, QTableWidgetItem(str(p.product_id)))
@@ -1371,3 +1366,66 @@ class MainWindow(QMainWindow):
         if dialog.exec() == QDialog.Accepted:
             self.update_order_table()
             self.update_notifications()
+
+    def init_charts(self):
+        self.chart_tab = QWidget()
+        self.tabs.addTab(self.chart_tab, "Графики")
+        chart_layout = QVBoxLayout(self.chart_tab)
+
+        self.chart_type = QComboBox()
+        self.chart_type.addItems(["Доступный объем продукции", "Доходы по датам"])
+        chart_layout.addWidget(QLabel("Тип графика:"))
+        chart_layout.addWidget(self.chart_type)
+
+        self.chart_button = QPushButton("Построить график")
+        self.chart_button.clicked.connect(self.generate_chart)
+        chart_layout.addWidget(self.chart_button)
+
+        self.chart_label = QLabel()
+        self.chart_label.setAlignment(Qt.AlignCenter)
+        chart_layout.addWidget(self.chart_label)
+
+    def generate_chart(self):
+        chart_type = self.chart_type.currentText()
+        if chart_type == "Доступный объем продукции":
+            products = self.session.query(FinishedProduct).all()
+            if not products:
+                QMessageBox.warning(self, "Ошибка", "Нет данных для построения графика")
+                return
+            product_ids = [str(p.product_id) for p in products]
+            available_volumes = [p.available_volume for p in products]
+            plt.figure(figsize=(10, 6))
+            plt.bar(product_ids, available_volumes, color='skyblue')
+            plt.title('Доступный объем продукции')
+            plt.xlabel('ID продукта')
+            plt.ylabel('Доступный объем (л)')
+            plt.xticks(rotation=45)
+            plt.tight_layout()
+            chart_path = "product_chart.png"
+        elif chart_type == "Доходы по датам":
+            orders = self.session.query(Order).filter(Order.status == OrderStatus.COMPLETED.value).all()
+            if not orders:
+                QMessageBox.warning(self, "Ошибка", "Нет данных для построения графика")
+                return
+            income_by_date = {}
+            for o in orders:
+                income_by_date[o.order_date] = income_by_date.get(o.order_date, 0) + o.total_order_cost
+            dates = list(income_by_date.keys())
+            incomes = list(income_by_date.values())
+            plt.figure(figsize=(10, 6))
+            plt.plot(dates, incomes, marker='o', color='green')
+            plt.title('Доходы по датам')
+            plt.xlabel('Дата')
+            plt.ylabel('Доход (руб)')
+            plt.xticks(rotation=45)
+            plt.tight_layout()
+            chart_path = "income_chart.png"
+
+        plt.savefig(chart_path)
+        plt.close()
+
+        pixmap = QPixmap(chart_path)
+        if pixmap.isNull():
+            QMessageBox.warning(self, "Ошибка", "Не удалось загрузить график")
+            return
+        self.chart_label.setPixmap(pixmap.scaled(600, 400, Qt.KeepAspectRatio, Qt.SmoothTransformation))

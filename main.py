@@ -4,18 +4,6 @@ from PySide6.QtWidgets import QApplication, QMessageBox, QDialog
 from ui import LoginWindow, MainWindow
 from models import Session, User
 
-# Функция для сброса пароля
-def reset_admin_password(session):
-    admin_user = session.query(User).filter_by(login='admin').first()
-    if admin_user:
-        new_password = 'admin123'
-        hashed = bcrypt.hashpw(new_password.encode('utf-8'), bcrypt.gensalt())
-        admin_user.password = hashed.decode('utf-8')
-        session.commit()
-        print(f"Пароль для пользователя 'admin' сброшен. Новый пароль: {new_password}")
-    else:
-        print("Пользователь 'admin' не найден в базе данных.")
-
 # Создаем приложение
 app = QApplication(sys.argv)
 
@@ -24,8 +12,6 @@ session = None
 try:
     session = Session()
 
-    # Сбрасываем пароль для admin
-    reset_admin_password(session)
 
     # Окно логина
     login = LoginWindow()
