@@ -321,7 +321,8 @@ class EditRawMaterialDialog(QDialog):
         self.cost_spin.setValue(self.material.cost)
         self.cost_spin.setSuffix(" руб/кг")
         self.purchase_date = QDateEdit()
-        self.purchase_date.setDate(QDate.fromString(self.material.purchase_date, "yyyy-MM-dd"))
+        purchase_date_str = str(self.material.purchase_date)
+        self.purchase_date.setDate(QDate.fromString(purchase_date_str, "yyyy-MM-dd"))
 
         layout.addRow("Название:", self.name_input)
         layout.addRow("Количество:", self.quantity_spin)
