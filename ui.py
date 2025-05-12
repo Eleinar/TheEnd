@@ -10,7 +10,6 @@ from models import Session, User, RawMaterial, Recipe, Batch, FinishedProduct, C
 from datetime import datetime
 import matplotlib.pyplot as plt
 import os
-
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 from reportlab.pdfbase import pdfmetrics
@@ -505,6 +504,66 @@ class CreateBatchDialog(QDialog):
 
         self.accept()
 
+class EditBatchDialog(QDialog):
+    def __init__(self, parent=None, batch_id=None):
+        super().__init__(parent)
+        self.setWindowTitle("Редактировать партию")
+        self.setFixedSize(350, 250)
+        self.setWindowIcon(QIcon("icon.png"))
+        self.session = Session()
+        self.batch = self.session.query(Batch).filter_by(batch_id=batch_id).first()
+
+        layout = QFormLayout()
+        self.recipe_combo = QComboBox()
+        recipes = self.session.query(Recipe).all()
+        self.recipe_combo.addItems([r.name for r in recipes])
+        self.recipe_combo.setCurrentText(self.batch.recipe.name)
+        self.volume_spin = QDoubleSpinBox()
+        self.volume_spin.setRange(1, 1000)
+        self.volume_spin.setValue(self.batch.volume)
+        self.volume_spin.setSuffix(" л")
+        self.start_date = QDateEdit()
+        self.start_date.setDate(QDate.fromString(self.batch.start_date, "yyyy-MM-dd"))
+        self.price_spin = QDoubleSpinBox()
+        self.price_spin.setRange(0, 10000)
+        self.price_spin.setValue(self.batch.price_per_liter)
+        self.price_spin.setSuffix(" руб/л")
+
+        layout.addRow("Рецепт:", self.recipe_combo)
+        layout.addRow("Объем:", self.volume_spin)
+        layout.addRow("Дата начала:", self.start_date)
+        layout.addRow("Цена за литр:", self.price_spin)
+
+        button_layout = QHBoxLayout()
+        self.save_button = QPushButton("Сохранить")
+        self.cancel_button = QPushButton("Отмена")
+        button_layout.addWidget(self.save_button)
+        button_layout.addWidget(self.cancel_button)
+        layout.addRow(button_layout)
+
+        self.save_button.clicked.connect(self.save_batch)
+        self.cancel_button.clicked.connect(self.reject)
+        self.setLayout(layout)
+        self.setStyleSheet(APP_STYLE)
+
+    def save_batch(self):
+        recipe_name = self.recipe_combo.currentText()
+        recipe = self.session.query(Recipe).filter_by(name=recipe_name).first()
+        volume = self.volume_spin.value()
+        price = self.price_spin.value()
+        start_date = self.start_date.date().toString("yyyy-MM-dd")
+        if not recipe or volume <= 0 or price < 0:
+            QMessageBox.warning(self, "Ошибка", "Выберите рецепт, объем > 0, цена >= 0")
+            return
+
+        self.batch.recipe_id = recipe.recipe_id
+        self.batch.volume = volume
+        self.batch.start_date = start_date
+        self.batch.end_date = self.start_date.date().addDays(14).toString("yyyy-MM-dd")
+        self.batch.price_per_liter = price
+        self.session.commit()
+        self.accept()
+
 class AddClientDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -603,7 +662,7 @@ class AddOrderDialog(QDialog):
     def __init__(self, parent=None, current_user_id=None):
         super().__init__(parent)
         self.setWindowTitle("Добавить заказ")
-        self.setFixedSize(600,500)
+        self.setFixedSize(600, 500)
         self.setWindowIcon(QIcon("icon.png"))
         self.session = Session()
         self.current_user_id = current_user_id
@@ -795,14 +854,18 @@ class MainWindow(QMainWindow):
         self.delete_raw_button.clicked.connect(self.delete_raw_material)
 
     def update_raw_table(self):
-        search_text = self.raw_search.text().lower()
-        materials = self.session.query(RawMaterial).filter(RawMaterial.name.ilike(f"%{search_text}%")).all()
-        self.raw_table.setRowCount(len(materials))
-        for i, m in enumerate(materials):
-            self.raw_table.setItem(i, 0, QTableWidgetItem(m.name))
-            self.raw_table.setItem(i, 1, QTableWidgetItem(f"{m.quantity} кг"))
-            self.raw_table.setItem(i, 2, QTableWidgetItem(f"{m.cost} руб/кг"))
-            self.raw_table.setItem(i, 3, QTableWidgetItem(str(m.purchase_date)))
+        try:
+            search_text = self.raw_search.text().lower()
+            materials = self.session.query(RawMaterial).filter(RawMaterial.name.ilike(f"%{search_text}%")).all()
+            self.raw_table.setRowCount(len(materials))
+            for i, m in enumerate(materials):
+                self.raw_table.setItem(i, 0, QTableWidgetItem(m.name))
+                self.raw_table.setItem(i, 1, QTableWidgetItem(f"{m.quantity} кг"))
+                self.raw_table.setItem(i, 2, QTableWidgetItem(f"{m.cost} руб/кг"))
+                self.raw_table.setItem(i, 3, QTableWidgetItem(str(m.purchase_date)))
+        except Exception as e:
+            QMessageBox.critical(self, "Ошибка", f"Не удалось подключиться к базе данных: {str(e)}")
+            self.raw_table.setRowCount(0)
 
     def show_edit_raw_material(self):
         selected_row = self.raw_table.currentRow()
@@ -871,17 +934,27 @@ class MainWindow(QMainWindow):
         batch_layout.addWidget(self.batch_table)
         batch_button_layout = QHBoxLayout()
         self.add_batch_button = QPushButton("Создать партию")
+        self.edit_batch_button = QPushButton("Редактировать")
+        self.delete_batch_button = QPushButton("Удалить")
         batch_button_layout.addWidget(self.add_batch_button)
+        batch_button_layout.addWidget(self.edit_batch_button)
+        batch_button_layout.addWidget(self.delete_batch_button)
         batch_layout.addLayout(batch_button_layout)
         self.add_batch_button.clicked.connect(self.show_create_batch)
+        self.edit_batch_button.clicked.connect(self.show_edit_batch)
+        self.delete_batch_button.clicked.connect(self.delete_batch)
 
     def update_recipe_table(self):
-        search_text = self.recipe_search.text().lower()
-        recipes = self.session.query(Recipe).filter(Recipe.name.ilike(f"%{search_text}%")).all()
-        self.recipe_table.setRowCount(len(recipes))
-        for i, r in enumerate(recipes):
-            self.recipe_table.setItem(i, 0, QTableWidgetItem(r.name))
-            self.recipe_table.setItem(i, 1, QTableWidgetItem(r.description))
+        try:
+            search_text = self.recipe_search.text().lower()
+            recipes = self.session.query(Recipe).filter(Recipe.name.ilike(f"%{search_text}%")).all()
+            self.recipe_table.setRowCount(len(recipes))
+            for i, r in enumerate(recipes):
+                self.recipe_table.setItem(i, 0, QTableWidgetItem(r.name))
+                self.recipe_table.setItem(i, 1, QTableWidgetItem(r.description))
+        except Exception as e:
+            QMessageBox.critical(self, "Ошибка", f"Не удалось подключиться к базе данных: {str(e)}")
+            self.recipe_table.setRowCount(0)
 
     def show_edit_recipe(self):
         selected_row = self.recipe_table.currentRow()
@@ -901,46 +974,86 @@ class MainWindow(QMainWindow):
             return
         name = self.recipe_table.item(selected_row, 0).text()
         recipe = self.session.query(Recipe).filter_by(name=name).first()
+        # Проверка, используется ли рецепт в партиях
+        used_in_batches = self.session.query(Batch).filter_by(recipe_id=recipe.recipe_id).first()
+        if used_in_batches:
+            QMessageBox.warning(self, "Ошибка", "Рецепт используется в партиях и не может быть удален")
+            return
         if QMessageBox.question(self, "Подтверждение", f"Удалить {name}?", QMessageBox.Yes | QMessageBox.No) == QMessageBox.Yes:
             self.session.delete(recipe)
             self.session.commit()
             self.update_recipe_table()
+            self.update_notifications()
 
     def update_batch_table(self):
-        search_text = self.batch_search.text().lower()
-        batches = self.session.query(Batch).filter(
-            (Batch.status.ilike(f"%{search_text}%"))
-        ).all()
-        self.batch_table.setRowCount(len(batches))
-        for i, b in enumerate(batches):
-            self.batch_table.setItem(i, 0, QTableWidgetItem(str(b.batch_id)))
-            self.batch_table.setItem(i, 1, QTableWidgetItem(f"{b.volume} л"))
-            status_combo = QComboBox()
-            status_combo.addItems([s.value for s in BatchStatus])
-            status_combo.setCurrentText(b.status)
-            status_combo.currentTextChanged.connect(lambda text, batch_id=b.batch_id: self.update_batch_status(batch_id, text))
-            self.batch_table.setCellWidget(i, 2, status_combo)
-            self.batch_table.setItem(i, 3, QTableWidgetItem(str(b.start_date)))
-            self.batch_table.setItem(i, 4, QTableWidgetItem(str(b.end_date)))
+        try:
+            search_text = self.batch_search.text().lower()
+            batches = self.session.query(Batch).filter(
+                (Batch.status.ilike(f"%{search_text}%"))
+            ).all()
+            self.batch_table.setRowCount(len(batches))
+            for i, b in enumerate(batches):
+                self.batch_table.setItem(i, 0, QTableWidgetItem(str(b.batch_id)))
+                self.batch_table.setItem(i, 1, QTableWidgetItem(f"{b.volume} л"))
+                status_combo = QComboBox()
+                status_combo.addItems([s.value for s in BatchStatus])
+                status_combo.setCurrentText(b.status)
+                status_combo.currentTextChanged.connect(lambda text, batch_id=b.batch_id: self.update_batch_status(batch_id, text))
+                self.batch_table.setCellWidget(i, 2, status_combo)
+                self.batch_table.setItem(i, 3, QTableWidgetItem(str(b.start_date)))
+                self.batch_table.setItem(i, 4, QTableWidgetItem(str(b.end_date)))
+        except Exception as e:
+            QMessageBox.critical(self, "Ошибка", f"Не удалось подключиться к базе данных: {str(e)}")
+            self.batch_table.setRowCount(0)
 
     def update_batch_status(self, batch_id, status):
+        try:
+            batch = self.session.query(Batch).filter_by(batch_id=batch_id).first()
+            if batch.status != status:
+                batch.status = status
+                if status == BatchStatus.READY.value:
+                    existing_product = self.session.query(FinishedProduct).filter_by(batch_id=batch.batch_id).first()
+                    if not existing_product:
+                        finished_product = FinishedProduct(
+                            batch_id=batch.batch_id,
+                            volume=batch.volume,
+                            available_volume=batch.volume,
+                            production_date=str(batch.end_date),
+                            price_per_liter=batch.price_per_liter
+                        )
+                        self.session.add(finished_product)
+                self.session.commit()
+                self.update_product_table()
+            self.update_notifications()
+        except Exception as e:
+            QMessageBox.critical(self, "Ошибка", f"Не удалось обновить статус: {str(e)}")
+
+    def show_edit_batch(self):
+        selected_row = self.batch_table.currentRow()
+        if selected_row == -1:
+            QMessageBox.warning(self, "Ошибка", "Выберите запись для редактирования")
+            return
+        batch_id = int(self.batch_table.item(selected_row, 0).text())
         batch = self.session.query(Batch).filter_by(batch_id=batch_id).first()
-        if batch.status != status:
-            batch.status = status
-            if status == BatchStatus.READY.value:
-                existing_product = self.session.query(FinishedProduct).filter_by(batch_id=batch.batch_id).first()
-                if not existing_product:
-                    finished_product = FinishedProduct(
-                        batch_id=batch.batch_id,
-                        volume=batch.volume,
-                        available_volume=batch.volume,
-                        production_date=str(batch.end_date),
-                        price_per_liter=batch.price_per_liter
-                    )
-                    self.session.add(finished_product)
-            self.session.commit()
+        dialog = EditBatchDialog(self, batch.batch_id)
+        if dialog.exec() == QDialog.Accepted:
+            self.update_batch_table()
             self.update_product_table()
-        self.update_notifications()
+            self.update_notifications()
+
+    def delete_batch(self):
+        selected_row = self.batch_table.currentRow()
+        if selected_row == -1:
+            QMessageBox.warning(self, "Ошибка", "Выберите запись для удаления")
+            return
+        batch_id = int(self.batch_table.item(selected_row, 0).text())
+        batch = self.session.query(Batch).filter_by(batch_id=batch_id).first()
+        if QMessageBox.question(self, "Подтверждение", f"Удалить партию №{batch_id}?", QMessageBox.Yes | QMessageBox.No) == QMessageBox.Yes:
+            self.session.delete(batch)
+            self.session.commit()
+            self.update_batch_table()
+            self.update_product_table()
+            self.update_notifications()
 
     def init_products(self):
         self.product_tab = QWidget()
@@ -978,11 +1091,11 @@ class MainWindow(QMainWindow):
         product_layout.addWidget(product_button)
 
     def update_product_table(self):
-        start_date = self.start_date_edit.date().toString("yyyy-MM-dd")
-        end_date = self.end_date_edit.date().toString("yyyy-MM-dd")
-        search_text = self.product_search.text().strip().lower()
-
         try:
+            start_date = self.start_date_edit.date().toString("yyyy-MM-dd")
+            end_date = self.end_date_edit.date().toString("yyyy-MM-dd")
+            search_text = self.product_search.text().strip().lower()
+
             query = self.session.query(FinishedProduct).filter(
                 FinishedProduct.production_date.between(start_date, end_date)
             )
@@ -1054,19 +1167,26 @@ class MainWindow(QMainWindow):
         order_layout.addWidget(self.order_table)
         order_button_layout = QHBoxLayout()
         self.add_order_button = QPushButton("Добавить заказ")
+        self.delete_order_button = QPushButton("Удалить")
         order_button_layout.addWidget(self.add_order_button)
+        order_button_layout.addWidget(self.delete_order_button)
         order_layout.addLayout(order_button_layout)
         self.add_order_button.clicked.connect(self.show_add_order)
+        self.delete_order_button.clicked.connect(self.delete_order)
 
     def update_client_table(self):
-        search_text = self.client_search.text().lower()
-        clients = self.session.query(Client).filter(Client.name.ilike(f"%{search_text}%")).all()
-        self.client_table.setRowCount(len(clients))
-        for i, c in enumerate(clients):
-            self.client_table.setItem(i, 0, QTableWidgetItem(c.name))
-            self.client_table.setItem(i, 1, QTableWidgetItem(c.type))
-            self.client_table.setItem(i, 2, QTableWidgetItem(c.contact))
-            self.client_table.setItem(i, 3, QTableWidgetItem(c.inn or "-"))
+        try:
+            search_text = self.client_search.text().lower()
+            clients = self.session.query(Client).filter(Client.name.ilike(f"%{search_text}%")).all()
+            self.client_table.setRowCount(len(clients))
+            for i, c in enumerate(clients):
+                self.client_table.setItem(i, 0, QTableWidgetItem(c.name))
+                self.client_table.setItem(i, 1, QTableWidgetItem(c.type))
+                self.client_table.setItem(i, 2, QTableWidgetItem(c.contact))
+                self.client_table.setItem(i, 3, QTableWidgetItem(c.inn or "-"))
+        except Exception as e:
+            QMessageBox.critical(self, "Ошибка", f"Не удалось подключиться к базе данных: {str(e)}")
+            self.client_table.setRowCount(0)
 
     def show_edit_client(self):
         selected_row = self.client_table.currentRow()
@@ -1086,33 +1206,69 @@ class MainWindow(QMainWindow):
             return
         name = self.client_table.item(selected_row, 0).text()
         client = self.session.query(Client).filter_by(name=name).first()
+        # Проверка, есть ли у клиента заказы
+        orders_exist = self.session.query(Order).filter_by(client_id=client.client_id).first()
+        if orders_exist:
+            QMessageBox.warning(self, "Ошибка", "Клиент имеет связанные заказы и не может быть удален")
+            return
         if QMessageBox.question(self, "Подтверждение", f"Удалить {name}?", QMessageBox.Yes | QMessageBox.No) == QMessageBox.Yes:
             self.session.delete(client)
             self.session.commit()
             self.update_client_table()
+            self.update_notifications()
 
     def update_order_table(self):
-        search_text = self.order_search.text().lower()
-        orders = self.session.query(Order).join(Client).filter(
-            Client.name.ilike(f"%{search_text}%")
-        ).all()
-        self.order_table.setRowCount(len(orders))
-        for i, o in enumerate(orders):
-            self.order_table.setItem(i, 0, QTableWidgetItem(str(o.order_id)))
-            self.order_table.setItem(i, 1, QTableWidgetItem(o.client.name))
-            self.order_table.setItem(i, 2, QTableWidgetItem(str(o.order_date)))
-            status_combo = QComboBox()
-            status_combo.addItems([s.value for s in OrderStatus])
-            status_combo.setCurrentText(o.status)
-            status_combo.currentTextChanged.connect(lambda text, order_id=o.order_id: self.update_order_status(order_id, text))
-            self.order_table.setCellWidget(i, 3, status_combo)
-            self.order_table.setItem(i, 4, QTableWidgetItem(f"{o.total_order_cost} руб"))
+        try:
+            search_text = self.order_search.text().lower()
+            orders = self.session.query(Order).join(Client).filter(
+                Client.name.ilike(f"%{search_text}%")
+            ).all()
+            self.order_table.setRowCount(len(orders))
+            for i, o in enumerate(orders):
+                self.order_table.setItem(i, 0, QTableWidgetItem(str(o.order_id)))
+                self.order_table.setItem(i, 1, QTableWidgetItem(o.client.name))
+                self.order_table.setItem(i, 2, QTableWidgetItem(str(o.order_date)))
+                status_combo = QComboBox()
+                status_combo.addItems([s.value for s in OrderStatus])
+                status_combo.setCurrentText(o.status)
+                status_combo.currentTextChanged.connect(lambda text, order_id=o.order_id: self.update_order_status(order_id, text))
+                self.order_table.setCellWidget(i, 3, status_combo)
+                self.order_table.setItem(i, 4, QTableWidgetItem(f"{o.total_order_cost} руб"))
+        except Exception as e:
+            QMessageBox.critical(self, "Ошибка", f"Не удалось подключиться к базе данных: {str(e)}")
+            self.order_table.setRowCount(0)
 
     def update_order_status(self, order_id, status):
+        try:
+            order = self.session.query(Order).filter_by(order_id=order_id).first()
+            order.status = status
+            self.session.commit()
+            self.update_notifications()
+        except Exception as e:
+            QMessageBox.critical(self, "Ошибка", f"Не удалось обновить статус: {str(e)}")
+
+    def delete_order(self):
+        selected_row = self.order_table.currentRow()
+        if selected_row == -1:
+            QMessageBox.warning(self, "Ошибка", "Выберите запись для удаления")
+            return
+        order_id = int(self.order_table.item(selected_row, 0).text())
         order = self.session.query(Order).filter_by(order_id=order_id).first()
-        order.status = status
-        self.session.commit()
-        self.update_notifications()
+        # Сохранение текущих позиций заказа для возврата объемов
+        order_items = self.session.query(OrderItem).filter_by(order_id=order_id).all()
+        if QMessageBox.question(self, "Подтверждение", f"Удалить заказ №{order_id}?", QMessageBox.Yes | QMessageBox.No) == QMessageBox.Yes:
+            # Возвращение объемов в доступные
+            for item in order_items:
+                product = self.session.query(FinishedProduct).filter_by(product_id=item.product_id).first()
+                if product:
+                    product.available_volume += item.volume
+            self.session.commit()
+            # Удаление заказа и связанных позиций
+            self.session.query(OrderItem).filter_by(order_id=order_id).delete()
+            self.session.delete(order)
+            self.session.commit()
+            self.update_order_table()
+            self.update_notifications()
 
     def init_reports(self):
         self.report_tab = QWidget()
@@ -1142,7 +1298,7 @@ class MainWindow(QMainWindow):
         
         font_path = "DejaVuSans.ttf"
         if not os.path.exists(font_path):
-            QMessageBox.critical(self, "Ошибка", "Шрифт DejaVuSans.ttf не найден. Укажи правильный путь.")
+            QMessageBox.critical(self, "Ошибка", "Шрифт DejaVuSans.ttf не найден. Укажите правильный путь.")
             return
         
         default_filename = f"report_{report_type.lower().replace(' ', '_')}_{start_date}_to_{end_date}.pdf"
@@ -1273,13 +1429,17 @@ class MainWindow(QMainWindow):
         self.delete_user_button.clicked.connect(self.delete_user)
 
     def update_user_table(self):
-        search_text = self.user_search.text().lower()
-        users = self.session.query(User).filter(User.login.ilike(f"%{search_text}%")).all()
-        self.user_table.setRowCount(len(users))
-        for i, u in enumerate(users):
-            self.user_table.setItem(i, 0, QTableWidgetItem(u.login))
-            self.user_table.setItem(i, 1, QTableWidgetItem("********"))
-            self.user_table.setItem(i, 2, QTableWidgetItem(u.role))
+        try:
+            search_text = self.user_search.text().lower()
+            users = self.session.query(User).filter(User.login.ilike(f"%{search_text}%")).all()
+            self.user_table.setRowCount(len(users))
+            for i, u in enumerate(users):
+                self.user_table.setItem(i, 0, QTableWidgetItem(u.login))
+                self.user_table.setItem(i, 1, QTableWidgetItem("********"))
+                self.user_table.setItem(i, 2, QTableWidgetItem(u.role))
+        except Exception as e:
+            QMessageBox.critical(self, "Ошибка", f"Не удалось подключиться к базе данных: {str(e)}")
+            self.user_table.setRowCount(0)
 
     def delete_user(self):
         selected_row = self.user_table.currentRow()
@@ -1294,30 +1454,33 @@ class MainWindow(QMainWindow):
             self.update_user_table()
 
     def update_notifications(self):
-        notifications = []
-        today = QDate.currentDate().toString("yyyy-MM-dd")
+        try:
+            notifications = []
+            today = QDate.currentDate().toString("yyyy-MM-dd")
 
-        honey = self.session.query(RawMaterial).filter_by(name="Мед").first()
-        if honey and honey.quantity < 10:
-            notifications.append(f"Мед < 10 кг (осталось {honey.quantity} кг)")
+            honey = self.session.query(RawMaterial).filter_by(name="Мед").first()
+            if honey and honey.quantity < 10:
+                notifications.append(f"Мед < 10 кг (осталось {honey.quantity} кг)")
 
-        ready_batches = self.session.query(Batch).filter(
-            Batch.status == BatchStatus.READY.value,
-            Batch.end_date == today
-        ).all()
-        for batch in ready_batches:
-            notifications.append(f"Партия №{batch.batch_id} готова")
+            ready_batches = self.session.query(Batch).filter(
+                Batch.status == BatchStatus.READY.value,
+                Batch.end_date == today
+            ).all()
+            for batch in ready_batches:
+                notifications.append(f"Партия №{batch.batch_id} готова")
 
-        pending_orders = self.session.query(Order).filter(
-            Order.status == OrderStatus.PENDING.value
-        ).all()
-        for order in pending_orders:
-            notifications.append(f"Заказ №{order.order_id} ожидает выполнения")
+            pending_orders = self.session.query(Order).filter(
+                Order.status == OrderStatus.PENDING.value
+            ).all()
+            for order in pending_orders:
+                notifications.append(f"Заказ №{order.order_id} ожидает выполнения")
 
-        if notifications:
-            self.notification_label.setText("Уведомления: " + "; ".join(notifications))
-        else:
-            self.notification_label.setText("Уведомления: нет активных")
+            if notifications:
+                self.notification_label.setText("Уведомления: " + "; ".join(notifications))
+            else:
+                self.notification_label.setText("Уведомления: нет активных")
+        except Exception as e:
+            self.notification_label.setText(f"Уведомления: ошибка подключения - {str(e)}")
 
     def show_add_user(self):
         dialog = AddUserDialog(self)
@@ -1387,46 +1550,40 @@ class MainWindow(QMainWindow):
         chart_layout.addWidget(self.chart_label)
 
     def generate_chart(self):
-        chart_type = self.chart_type.currentText()
-        if chart_type == "Доступный объем продукции":
-            products = self.session.query(FinishedProduct).all()
-            if not products:
-                QMessageBox.warning(self, "Ошибка", "Нет данных для построения графика")
-                return
-            product_ids = [str(p.product_id) for p in products]
-            available_volumes = [p.available_volume for p in products]
+        try:
+            chart_type = self.chart_type.currentText()
             plt.figure(figsize=(10, 6))
-            plt.bar(product_ids, available_volumes, color='skyblue')
-            plt.title('Доступный объем продукции')
-            plt.xlabel('ID продукта')
-            plt.ylabel('Доступный объем (л)')
-            plt.xticks(rotation=45)
+            if chart_type == "Доступный объем продукции":
+                products = self.session.query(FinishedProduct).all()
+                if not products:
+                    QMessageBox.warning(self, "Ошибка", "Нет данных для построения графика")
+                    return
+                product_ids = [str(p.product_id) for p in products]
+                available_volumes = [p.available_volume for p in products]
+                plt.bar(product_ids, available_volumes, color='skyblue')
+                plt.title('Доступный объем продукции')
+                plt.xlabel('ID продукта')
+                plt.ylabel('Доступный объем (л)')
+                plt.xticks(rotation=45)
+            elif chart_type == "Доходы по датам":
+                orders = self.session.query(Order).filter(Order.status == OrderStatus.COMPLETED.value).all()
+                if not orders:
+                    QMessageBox.warning(self, "Ошибка", "Нет данных для построения графика")
+                    return
+                income_by_date = {}
+                for o in orders:
+                    income_by_date[o.order_date] = income_by_date.get(o.order_date, 0) + o.total_order_cost
+                dates = list(income_by_date.keys())
+                incomes = list(income_by_date.values())
+                plt.plot(dates, incomes, marker='o', color='green')
+                plt.title('Доходы по датам')
+                plt.xlabel('Дата')
+                plt.ylabel('Доход (руб)')
+                plt.xticks(rotation=45)
             plt.tight_layout()
-            chart_path = "product_chart.png"
-        elif chart_type == "Доходы по датам":
-            orders = self.session.query(Order).filter(Order.status == OrderStatus.COMPLETED.value).all()
-            if not orders:
-                QMessageBox.warning(self, "Ошибка", "Нет данных для построения графика")
-                return
-            income_by_date = {}
-            for o in orders:
-                income_by_date[o.order_date] = income_by_date.get(o.order_date, 0) + o.total_order_cost
-            dates = list(income_by_date.keys())
-            incomes = list(income_by_date.values())
-            plt.figure(figsize=(10, 6))
-            plt.plot(dates, incomes, marker='o', color='green')
-            plt.title('Доходы по датам')
-            plt.xlabel('Дата')
-            plt.ylabel('Доход (руб)')
-            plt.xticks(rotation=45)
-            plt.tight_layout()
-            chart_path = "income_chart.png"
-
-        plt.savefig(chart_path)
-        plt.close()
-
-        pixmap = QPixmap(chart_path)
-        if pixmap.isNull():
-            QMessageBox.warning(self, "Ошибка", "Не удалось загрузить график")
-            return
-        self.chart_label.setPixmap(pixmap.scaled(600, 400, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            chart_path = f"{chart_type.lower().replace(' ', '_')}_chart.png"
+            plt.savefig(chart_path)
+            plt.close()
+            self.chart_label.setPixmap(QPixmap(chart_path))
+        except Exception as e:
+            QMessageBox.critical(self, "Ошибка", f"Не удалось построить график: {str(e)}")
