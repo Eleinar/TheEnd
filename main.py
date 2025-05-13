@@ -4,7 +4,6 @@ from PySide6.QtWidgets import QApplication, QMessageBox, QDialog
 from ui import LoginWindow, MainWindow
 from models import Session, User
 
-# Создаем приложение
 app = QApplication(sys.argv)
 
 # Инициализация сессии
