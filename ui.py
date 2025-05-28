@@ -674,22 +674,13 @@ class AddOrderDialog(QDialog):
         layout.addWidget(QLabel("Клиент:"))
         layout.addWidget(self.client_combo)
 
-        self.items_table = QTableWidget(1, 3)
-        self.items_table.setHorizontalHeaderLabels(["Продукция", "Объем (л)", "Стоимость (руб)"])
-        self.product_combo = QComboBox()
-        products = self.session.query(FinishedProduct).all()
-        self.product_combo.addItems([f"Продукт {p.product_id} - {p.price_per_liter} руб/л" for p in products])
-        self.volume_spin = QDoubleSpinBox()
-        self.volume_spin.setRange(1, 1000)
-        self.volume_spin.setValue(10)
-        self.items_table.setCellWidget(0, 0, self.product_combo)
-        self.items_table.setCellWidget(0, 1, self.volume_spin)
-        self.items_table.setItem(0, 2, QTableWidgetItem("0 руб"))
-        self.volume_spin.valueChanged.connect(self.update_cost)
+        self.items_table = QTableWidget(0, 3)
+        self.items_table.setHorizontalHeaderLabels(["Медовуха", "Объем (л)", "Стоимость (руб)"])
         layout.addWidget(QLabel("Позиции:"))
         layout.addWidget(self.items_table)
 
         self.add_item_button = QPushButton("Добавить позицию")
+        self.add_item_button.clicked.connect(self.add_item)
         layout.addWidget(self.add_item_button)
 
         self.total_label = QLabel("Общая стоимость: 0 руб")
@@ -707,39 +698,55 @@ class AddOrderDialog(QDialog):
         button_layout.addWidget(self.cancel_button)
         layout.addLayout(button_layout)
 
-        self.add_item_button.clicked.connect(self.add_item)
         self.create_button.clicked.connect(self.create_order)
         self.cancel_button.clicked.connect(self.reject)
         self.setLayout(layout)
         self.setStyleSheet(APP_STYLE)
 
-    def update_cost(self):
-        for row in range(self.items_table.rowCount()):
-            volume = self.items_table.cellWidget(row, 1).value()
-            product_text = self.items_table.cellWidget(row, 0).currentText()
-            price = float(product_text.split(" - ")[1].replace(" руб/л", ""))
-            total_cost = volume * price
-            self.items_table.setItem(row, 2, QTableWidgetItem(f"{total_cost} руб"))
+    def add_item(self):
+        """Добавляет новую строку для позиции заказа с выпадающим списком медовух."""
+        row_position = self.items_table.rowCount()
+        self.items_table.insertRow(row_position)
+        session = Session()
+        # Выпадающий список медовух (названия из рецептов)
+        product_combo = QComboBox()
+        finished_products = self.session.query(FinishedProduct).join(Batch).join(Recipe).all()
+        self.products = [
+            (fp.product_id, session.query(Recipe).filter_by(recipe_id=fp.batch_id).first().name, fp.available_volume, fp.price_per_liter)
+            for fp in finished_products if session.query(Recipe).filter_by(recipe_id=fp.batch_id).first()
+        ]
+        product_combo.addItems([p[1] for p in self.products])  # Используем названия медовух
+        self.items_table.setCellWidget(row_position, 0, product_combo)
+        
+        # Поле для ввода объема
+        volume_input = QDoubleSpinBox()
+        volume_input.setRange(1, 1000)
+        volume_input.setValue(10)
+        volume_input.valueChanged.connect(lambda: self.update_cost(row_position))
+        self.items_table.setCellWidget(row_position, 1, volume_input)
+        
+        # Поле для стоимости
+        cost_item = QTableWidgetItem("0 руб")
+        self.items_table.setItem(row_position, 2, cost_item)
+        session.commit()
+        session.close()
+
+    def update_cost(self, row):
+        """Обновляет стоимость позиции на основе введенного объема."""
+        volume = self.items_table.cellWidget(row, 1).value()
+        product_combo = self.items_table.cellWidget(row, 0)
+        product_index = product_combo.currentIndex()
+        _, _, _, price_per_liter = self.products[product_index]
+        cost = volume * price_per_liter
+        self.items_table.setItem(row, 2, QTableWidgetItem(f"{cost:.2f} руб"))
         self.update_total()
 
-    def add_item(self):
-        row = self.items_table.rowCount()
-        self.items_table.insertRow(row)
-        product_combo = QComboBox()
-        products = self.session.query(FinishedProduct).all()
-        product_combo.addItems([f"Продукт {p.product_id} - {p.price_per_liter} руб/л" for p in products])
-        volume_spin = QDoubleSpinBox()
-        volume_spin.setRange(1, 1000)
-        volume_spin.setValue(10)
-        volume_spin.valueChanged.connect(self.update_cost)
-        self.items_table.setCellWidget(row, 0, product_combo)
-        self.items_table.setCellWidget(row, 1, volume_spin)
-        self.items_table.setItem(row, 2, QTableWidgetItem("0 руб"))
-
     def update_total(self):
+        """Обновляет общую стоимость заказа."""
         total = sum(float(self.items_table.item(row, 2).text().replace(" руб", "")) 
-                    for row in range(self.items_table.rowCount()))
-        self.total_label.setText(f"Общая стоимость: {total} руб")
+                    for row in range(self.items_table.rowCount()) 
+                    if self.items_table.item(row, 2) and self.items_table.item(row, 2).text().replace(" руб", "").replace(".", "").isdigit())
+        self.total_label.setText(f"Общая стоимость: {total:.2f} руб")
 
     def create_order(self):
         client_name = self.client_combo.currentText()
@@ -749,12 +756,12 @@ class AddOrderDialog(QDialog):
             return
 
         for row in range(self.items_table.rowCount()):
-            product_text = self.items_table.cellWidget(row, 0).currentText()
-            product_id = int(product_text.split(" - ")[0].replace("Продукт ", ""))
+            product_combo = self.items_table.cellWidget(row, 0)
             volume = self.items_table.cellWidget(row, 1).value()
-            product = self.session.query(FinishedProduct).filter_by(product_id=product_id).first()
-            if product.available_volume < volume:
-                QMessageBox.warning(self, "Ошибка", f"Недостаточно продукции {product_id} (нужно {volume} л, есть {product.available_volume} л)")
+            product_index = product_combo.currentIndex()
+            product_id, recipe_name, available_volume, _ = self.products[product_index]
+            if volume > available_volume:
+                QMessageBox.warning(self, "Ошибка", f"Недостаточно {recipe_name} (доступно {available_volume} л)")
                 return
 
         order = Order(
@@ -767,26 +774,28 @@ class AddOrderDialog(QDialog):
         self.session.add(order)
         self.session.commit()
 
+        total_cost = 0
         for row in range(self.items_table.rowCount()):
-            product_text = self.items_table.cellWidget(row, 0).currentText()
-            product_id = int(product_text.split(" - ")[0].replace("Продукт ", ""))
+            product_combo = self.items_table.cellWidget(row, 0)
             volume = self.items_table.cellWidget(row, 1).value()
-            total_cost = float(self.items_table.item(row, 2).text().replace(" руб", ""))
-            if volume <= 0 or total_cost < 0:
-                QMessageBox.warning(self, "Ошибка", "Объем > 0, стоимость >= 0")
-                return
-            item = OrderItem(
+            product_index = product_combo.currentIndex()
+            product_id, recipe_name, _, price_per_liter = self.products[product_index]
+            cost = volume * price_per_liter
+            total_cost += cost
+            order_item = OrderItem(
                 order_id=order.order_id,
                 product_id=product_id,
                 volume=volume,
-                total_cost=total_cost
+                total_cost=cost,
+                recipe_name=recipe_name  # Сохранение названия медовухи
             )
-            self.session.add(item)
+            self.session.add(order_item)
             product = self.session.query(FinishedProduct).filter_by(product_id=product_id).first()
             product.available_volume -= volume
+
+        order.total_order_cost = total_cost
         self.session.commit()
-        order.total_order_cost = sum(i.total_cost for i in order.order_items)
-        self.session.commit()
+        QMessageBox.information(self, "Успех", "Заказ создан")
         self.accept()
 
 class MainWindow(QMainWindow):
@@ -974,7 +983,6 @@ class MainWindow(QMainWindow):
             return
         name = self.recipe_table.item(selected_row, 0).text()
         recipe = self.session.query(Recipe).filter_by(name=name).first()
-        # Проверка, используется ли рецепт в партиях
         used_in_batches = self.session.query(Batch).filter_by(recipe_id=recipe.recipe_id).first()
         if used_in_batches:
             QMessageBox.warning(self, "Ошибка", "Рецепт используется в партиях и не может быть удален")
@@ -1014,12 +1022,14 @@ class MainWindow(QMainWindow):
                 if status == BatchStatus.READY.value:
                     existing_product = self.session.query(FinishedProduct).filter_by(batch_id=batch.batch_id).first()
                     if not existing_product:
+                        recipe_name = self.session.query(Recipe).filter_by(recipe_id=batch.recipe_id).first().name
                         finished_product = FinishedProduct(
                             batch_id=batch.batch_id,
                             volume=batch.volume,
                             available_volume=batch.volume,
                             production_date=str(batch.end_date),
-                            price_per_liter=batch.price_per_liter
+                            price_per_liter=batch.price_per_liter,
+                            recipe_name=recipe_name  # Сохранение названия медовухи
                         )
                         self.session.add(finished_product)
                 self.session.commit()
@@ -1082,7 +1092,7 @@ class MainWindow(QMainWindow):
 
         self.product_table = QTableWidget()
         self.product_table.setColumnCount(5)
-        self.product_table.setHorizontalHeaderLabels(["№", "Объем", "Доступно", "Дата розлива", "Цена/л"])
+        self.product_table.setHorizontalHeaderLabels(["Название", "Объем", "Доступно", "Дата розлива", "Цена/л"])
         self.update_product_table()
         product_layout.addWidget(self.product_table)
 
@@ -1096,7 +1106,7 @@ class MainWindow(QMainWindow):
             end_date = self.end_date_edit.date().toString("yyyy-MM-dd")
             search_text = self.product_search.text().strip().lower()
 
-            query = self.session.query(FinishedProduct).filter(
+            query = self.session.query(FinishedProduct).join(Batch).join(Recipe).filter(
                 FinishedProduct.production_date.between(start_date, end_date)
             )
 
@@ -1115,12 +1125,12 @@ class MainWindow(QMainWindow):
 
             self.product_table.setRowCount(len(products))
             for i, p in enumerate(products):
-                self.product_table.setItem(i, 0, QTableWidgetItem(str(p.product_id)))
+                recipe_name = self.session.query(Recipe).filter_by(recipe_id=p.batch.recipe_id).first().name
+                self.product_table.setItem(i, 0, QTableWidgetItem(recipe_name))
                 self.product_table.setItem(i, 1, QTableWidgetItem(f"{p.volume} л"))
                 self.product_table.setItem(i, 2, QTableWidgetItem(f"{p.available_volume} л"))
                 self.product_table.setItem(i, 3, QTableWidgetItem(str(p.production_date)))
                 self.product_table.setItem(i, 4, QTableWidgetItem(f"{p.price_per_liter} руб"))
-
         except Exception as e:
             QMessageBox.warning(self, "Ошибка", f"Ошибка при обновлении таблицы: {str(e)}")
             self.product_table.setRowCount(0)
@@ -1206,7 +1216,6 @@ class MainWindow(QMainWindow):
             return
         name = self.client_table.item(selected_row, 0).text()
         client = self.session.query(Client).filter_by(name=name).first()
-        # Проверка, есть ли у клиента заказы
         orders_exist = self.session.query(Order).filter_by(client_id=client.client_id).first()
         if orders_exist:
             QMessageBox.warning(self, "Ошибка", "Клиент имеет связанные заказы и не может быть удален")
@@ -1254,16 +1263,13 @@ class MainWindow(QMainWindow):
             return
         order_id = int(self.order_table.item(selected_row, 0).text())
         order = self.session.query(Order).filter_by(order_id=order_id).first()
-        # Сохранение текущих позиций заказа для возврата объемов
         order_items = self.session.query(OrderItem).filter_by(order_id=order_id).all()
         if QMessageBox.question(self, "Подтверждение", f"Удалить заказ №{order_id}?", QMessageBox.Yes | QMessageBox.No) == QMessageBox.Yes:
-            # Возвращение объемов в доступные
             for item in order_items:
                 product = self.session.query(FinishedProduct).filter_by(product_id=item.product_id).first()
                 if product:
                     product.available_volume += item.volume
             self.session.commit()
-            # Удаление заказа и связанных позиций
             self.session.query(OrderItem).filter_by(order_id=order_id).delete()
             self.session.delete(order)
             self.session.commit()
@@ -1558,11 +1564,11 @@ class MainWindow(QMainWindow):
                 if not products:
                     QMessageBox.warning(self, "Ошибка", "Нет данных для построения графика")
                     return
-                product_ids = [str(p.product_id) for p in products]
+                product_names = [self.session.query(Recipe).filter_by(recipe_id=p.batch.recipe_id).first().name for p in products]
                 available_volumes = [p.available_volume for p in products]
-                plt.bar(product_ids, available_volumes, color='skyblue')
+                plt.bar(product_names, available_volumes, color='skyblue')
                 plt.title('Доступный объем продукции')
-                plt.xlabel('ID продукта')
+                plt.xlabel('Название медовухи')
                 plt.ylabel('Доступный объем (л)')
                 plt.xticks(rotation=45)
             elif chart_type == "Доходы по датам":
