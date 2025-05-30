@@ -253,7 +253,7 @@ class AddRawMaterialDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Добавить закупку")
-        self.setFixedSize(350, 250)
+        self.setFixedSize(350, 300)  # Увеличил размер для нового поля
         self.setWindowIcon(QIcon("icon.png"))
         self.session = Session()
 
@@ -262,16 +262,19 @@ class AddRawMaterialDialog(QDialog):
         self.quantity_spin = QDoubleSpinBox()
         self.quantity_spin.setRange(0, 10000)
         self.quantity_spin.setValue(10)
-        self.quantity_spin.setSuffix(" кг")
+        self.unit_combo = QComboBox()
+        self.unit_combo.addItems(["кг", "л", "шт"])
+        self.unit_combo.setCurrentText("кг")  # Значение по умолчанию
         self.cost_spin = QDoubleSpinBox()
         self.cost_spin.setRange(0, 10000)
         self.cost_spin.setValue(100)
-        self.cost_spin.setSuffix(" руб/кг")
+        self.cost_spin.setSuffix(" руб/ед")
         self.purchase_date = QDateEdit()
         self.purchase_date.setDate(QDate.currentDate())
 
         layout.addRow("Название:", self.name_input)
         layout.addRow("Количество:", self.quantity_spin)
+        layout.addRow("Единица измерения:", self.unit_combo)
         layout.addRow("Стоимость:", self.cost_spin)
         layout.addRow("Дата закупки:", self.purchase_date)
 
@@ -285,26 +288,41 @@ class AddRawMaterialDialog(QDialog):
         self.create_button.clicked.connect(self.create_raw_material)
         self.cancel_button.clicked.connect(self.reject)
         self.setLayout(layout)
-        self.setStyleSheet(APP_STYLE)
 
     def create_raw_material(self):
         name = self.name_input.text().strip()
         quantity = self.quantity_spin.value()
+        unit = self.unit_combo.currentText()
         cost = self.cost_spin.value()
         purchase_date = self.purchase_date.date().toString("yyyy-MM-dd")
-        if not name or quantity < 0 or cost < 0:
+
+        if not name or quantity <= 0 or cost <= 0:
             QMessageBox.warning(self, "Ошибка", "Заполните название, количество и стоимость корректно")
             return
-        material = RawMaterial(name=name, quantity=quantity, cost=cost, purchase_date=purchase_date)
-        self.session.add(material)
-        self.session.commit()
-        self.accept()
+
+        try:
+            material = RawMaterial(
+                name=name,
+                quantity=quantity,
+                unit=unit,  # Передаем единицу измерения
+                cost=cost,
+                purchase_date=purchase_date,
+                min_quantity=0  # Предполагаемое значение, можно изменить
+            )
+            self.session.add(material)
+            self.session.commit()
+            self.accept()
+        except Exception as e:
+            self.session.rollback()  # Откатываем транзакцию при ошибке
+            QMessageBox.critical(self, "Ошибка", f"Не удалось добавить закупку: {str(e)}")
+        finally:
+            self.session.close()  # Закрываем сессию
 
 class EditRawMaterialDialog(QDialog):
     def __init__(self, parent=None, material_id=None):
         super().__init__(parent)
         self.setWindowTitle("Редактировать закупку")
-        self.setFixedSize(350, 250)
+        self.setFixedSize(350, 300)  # Увеличил размер для нового поля
         self.setWindowIcon(QIcon("icon.png"))
         self.session = Session()
         self.material = self.session.query(RawMaterial).filter_by(material_id=material_id).first()
@@ -314,17 +332,20 @@ class EditRawMaterialDialog(QDialog):
         self.quantity_spin = QDoubleSpinBox()
         self.quantity_spin.setRange(0, 10000)
         self.quantity_spin.setValue(self.material.quantity)
-        self.quantity_spin.setSuffix(" кг")
+        self.unit_combo = QComboBox()
+        self.unit_combo.addItems(["кг", "л", "шт"])
+        self.unit_combo.setCurrentText(self.material.unit if self.material.unit else "кг")  # Устанавливаем текущее значение
         self.cost_spin = QDoubleSpinBox()
         self.cost_spin.setRange(0, 10000)
         self.cost_spin.setValue(self.material.cost)
-        self.cost_spin.setSuffix(" руб/кг")
+        self.cost_spin.setSuffix(" руб/ед")
         self.purchase_date = QDateEdit()
         purchase_date_str = str(self.material.purchase_date)
         self.purchase_date.setDate(QDate.fromString(purchase_date_str, "yyyy-MM-dd"))
 
         layout.addRow("Название:", self.name_input)
         layout.addRow("Количество:", self.quantity_spin)
+        layout.addRow("Единица измерения:", self.unit_combo)
         layout.addRow("Стоимость:", self.cost_spin)
         layout.addRow("Дата закупки:", self.purchase_date)
 
@@ -338,23 +359,32 @@ class EditRawMaterialDialog(QDialog):
         self.save_button.clicked.connect(self.save_material)
         self.cancel_button.clicked.connect(self.reject)
         self.setLayout(layout)
-        self.setStyleSheet(APP_STYLE)
 
     def save_material(self):
         name = self.name_input.text().strip()
         quantity = self.quantity_spin.value()
+        unit = self.unit_combo.currentText()
         cost = self.cost_spin.value()
         purchase_date = self.purchase_date.date().toString("yyyy-MM-dd")
-        if not name or quantity < 0 or cost < 0:
+
+        if not name or quantity <= 0 or cost <= 0:
             QMessageBox.warning(self, "Ошибка", "Заполните название, количество и стоимость корректно")
             return
-        self.material.name = name
-        self.material.quantity = quantity
-        self.material.cost = cost
-        self.material.purchase_date = purchase_date
-        self.session.commit()
-        self.accept()
 
+        try:
+            self.material.name = name
+            self.material.quantity = quantity
+            self.material.unit = unit  # Обновляем единицу измерения
+            self.material.cost = cost
+            self.material.purchase_date = purchase_date
+            self.session.commit()
+            self.accept()
+        except Exception as e:
+            self.session.rollback()  # Откатываем транзакцию при ошибке
+            QMessageBox.critical(self, "Ошибка", f"Не удалось сохранить изменения: {str(e)}")
+        finally:
+            self.session.close()  # Закрываем сессию
+            
 class AddRecipeDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -701,21 +731,23 @@ class AddOrderDialog(QDialog):
         self.create_button.clicked.connect(self.create_order)
         self.cancel_button.clicked.connect(self.reject)
         self.setLayout(layout)
-        self.setStyleSheet(APP_STYLE)
 
     def add_item(self):
         """Добавляет новую строку для позиции заказа с выпадающим списком медовух."""
         row_position = self.items_table.rowCount()
         self.items_table.insertRow(row_position)
-        session = Session()
+        
         # Выпадающий список медовух (названия из рецептов)
         product_combo = QComboBox()
         finished_products = self.session.query(FinishedProduct).join(Batch).join(Recipe).all()
         self.products = [
-            (fp.product_id, session.query(Recipe).filter_by(recipe_id=fp.batch_id).first().name, fp.available_volume, fp.price_per_liter)
-            for fp in finished_products if session.query(Recipe).filter_by(recipe_id=fp.batch_id).first()
+            (fp.product_id, session.query(Recipe).filter_by(recipe_id=fp.batch.recipe_id).first().name, fp.available_volume, fp.price_per_liter)
+            for fp in finished_products
+            for session in [Session()]  # Создаем новую сессию для запроса
+            if session.query(Recipe).filter_by(recipe_id=fp.batch.recipe_id).first()
         ]
-        product_combo.addItems([p[1] for p in self.products])  # Используем названия медовух
+        product_combo.addItems([p[1] for p in self.products])  # Отображаем названия медовух
+        product_combo.currentIndexChanged.connect(lambda: self.update_cost(row_position))
         self.items_table.setCellWidget(row_position, 0, product_combo)
         
         # Поле для ввода объема
@@ -725,78 +757,92 @@ class AddOrderDialog(QDialog):
         volume_input.valueChanged.connect(lambda: self.update_cost(row_position))
         self.items_table.setCellWidget(row_position, 1, volume_input)
         
-        # Поле для стоимости
+        # Поле для стоимости (рассчитываем сразу)
         cost_item = QTableWidgetItem("0 руб")
         self.items_table.setItem(row_position, 2, cost_item)
-        session.commit()
-        session.close()
+        
+        # Рассчитываем стоимость сразу после добавления
+        self.update_cost(row_position)
 
     def update_cost(self, row):
-        """Обновляет стоимость позиции на основе введенного объема."""
+        """Обновляет стоимость позиции на основе объема и выбранного продукта."""
         volume = self.items_table.cellWidget(row, 1).value()
         product_combo = self.items_table.cellWidget(row, 0)
         product_index = product_combo.currentIndex()
-        _, _, _, price_per_liter = self.products[product_index]
-        cost = volume * price_per_liter
-        self.items_table.setItem(row, 2, QTableWidgetItem(f"{cost:.2f} руб"))
-        self.update_total()
+        if product_index >= 0 and product_index < len(self.products):
+            _, _, _, price_per_liter = self.products[product_index]
+            cost = volume * price_per_liter
+            self.items_table.setItem(row, 2, QTableWidgetItem(f"{cost:.2f} руб"))
+            self.update_total()
 
     def update_total(self):
         """Обновляет общую стоимость заказа."""
-        total = sum(float(self.items_table.item(row, 2).text().replace(" руб", "")) 
-                    for row in range(self.items_table.rowCount()) 
-                    if self.items_table.item(row, 2) and self.items_table.item(row, 2).text().replace(" руб", "").replace(".", "").isdigit())
+        total = 0
+        for row in range(self.items_table.rowCount()):
+            cost_item = self.items_table.item(row, 2)
+            if cost_item and cost_item.text().replace(" руб", "").replace(".", "").replace("-", "").isdigit():
+                total += float(cost_item.text().replace(" руб", ""))
         self.total_label.setText(f"Общая стоимость: {total:.2f} руб")
 
     def create_order(self):
+        """Создает новый заказ и добавляет позиции."""
         client_name = self.client_combo.currentText()
         client = self.session.query(Client).filter_by(name=client_name).first()
         if not client:
             QMessageBox.warning(self, "Ошибка", "Выберите клиента")
             return
 
+        if self.items_table.rowCount() == 0:
+            QMessageBox.warning(self, "Ошибка", "Добавьте хотя бы одну позицию")
+            return
+
         for row in range(self.items_table.rowCount()):
             product_combo = self.items_table.cellWidget(row, 0)
             volume = self.items_table.cellWidget(row, 1).value()
             product_index = product_combo.currentIndex()
-            product_id, recipe_name, available_volume, _ = self.products[product_index]
+            _, _, available_volume, _ = self.products[product_index]
             if volume > available_volume:
-                QMessageBox.warning(self, "Ошибка", f"Недостаточно {recipe_name} (доступно {available_volume} л)")
+                QMessageBox.warning(self, "Ошибка", f"Недостаточно продукции (доступно {available_volume} л)")
                 return
 
-        order = Order(
-            client_id=client.client_id,
-            order_date=self.date_edit.date().toString("yyyy-MM-dd"),
-            status=OrderStatus.PENDING.value,
-            user_id=self.current_user_id,
-            total_order_cost=0
-        )
-        self.session.add(order)
-        self.session.commit()
-
-        total_cost = 0
-        for row in range(self.items_table.rowCount()):
-            product_combo = self.items_table.cellWidget(row, 0)
-            volume = self.items_table.cellWidget(row, 1).value()
-            product_index = product_combo.currentIndex()
-            product_id, recipe_name, _, price_per_liter = self.products[product_index]
-            cost = volume * price_per_liter
-            total_cost += cost
-            order_item = OrderItem(
-                order_id=order.order_id,
-                product_id=product_id,
-                volume=volume,
-                total_cost=cost,
-                recipe_name=recipe_name  # Сохранение названия медовухи
+        try:
+            order = Order(
+                client_id=client.client_id,
+                order_date=self.date_edit.date().toString("yyyy-MM-dd"),
+                status=OrderStatus.PENDING.value,
+                user_id=self.current_user_id,
+                total_order_cost=0
             )
-            self.session.add(order_item)
-            product = self.session.query(FinishedProduct).filter_by(product_id=product_id).first()
-            product.available_volume -= volume
+            self.session.add(order)
+            self.session.commit()
 
-        order.total_order_cost = total_cost
-        self.session.commit()
-        QMessageBox.information(self, "Успех", "Заказ создан")
-        self.accept()
+            total_cost = 0
+            for row in range(self.items_table.rowCount()):
+                product_combo = self.items_table.cellWidget(row, 0)
+                volume = self.items_table.cellWidget(row, 1).value()
+                product_index = product_combo.currentIndex()
+                product_id, _, _, price_per_liter = self.products[product_index]
+                cost = volume * price_per_liter
+                total_cost += cost
+                order_item = OrderItem(
+                    order_id=order.order_id,
+                    product_id=product_id,  # Передаем только product_id
+                    volume=volume,
+                    total_cost=cost
+                )
+                self.session.add(order_item)
+                product = self.session.query(FinishedProduct).filter_by(product_id=product_id).first()
+                product.available_volume -= volume
+
+            order.total_order_cost = total_cost
+            self.session.commit()
+            QMessageBox.information(self, "Успех", "Заказ создан")
+            self.accept()
+        except Exception as e:
+            self.session.rollback()
+            QMessageBox.critical(self, "Ошибка", f"Не удалось создать заказ: {str(e)}")
+        finally:
+            self.session.close()
 
 class MainWindow(QMainWindow):
     def __init__(self, role="Технолог", user_id=None):
@@ -1291,7 +1337,7 @@ class MainWindow(QMainWindow):
         report_form.addRow("Дата начала:", self.start_date)
         report_form.addRow("Дата окончания:", self.end_date)
         report_layout.addLayout(report_form)
-        
+    
         self.report_button = QPushButton("Сформировать PDF")
         report_layout.addWidget(self.report_button)
         
@@ -1301,12 +1347,12 @@ class MainWindow(QMainWindow):
         report_type = self.report_type.currentText()
         start_date = self.start_date.date().toString("yyyy-MM-dd")
         end_date = self.end_date.date().toString("yyyy-MM-dd")
-        
+
         font_path = "DejaVuSans.ttf"
         if not os.path.exists(font_path):
             QMessageBox.critical(self, "Ошибка", "Шрифт DejaVuSans.ttf не найден. Укажите правильный путь.")
             return
-        
+
         default_filename = f"report_{report_type.lower().replace(' ', '_')}_{start_date}_to_{end_date}.pdf"
         output_file, _ = QFileDialog.getSaveFileName(
             self,
@@ -1317,97 +1363,117 @@ class MainWindow(QMainWindow):
         if not output_file:
             return
 
-        pdfmetrics.registerFont(TTFont("DejaVuSans", font_path))
-        
-        c = canvas.Canvas(output_file, pagesize=A4)
-        c.setFont("DejaVuSans", 12)
-        width, height = A4
+        try:
+            pdfmetrics.registerFont(TTFont("DejaVuSans", font_path))
 
-        c.setFont("DejaVuSans", 16)
-        c.drawCentredString(width / 2, height - 40, f"Отчет: {report_type}")
-        c.setFont("DejaVuSans", 12)
-        c.drawCentredString(width / 2, height - 60, f"Период: {start_date} - {end_date}")
-        
-        y = height - 100
-        line_height = 20
+            c = canvas.Canvas(output_file, pagesize=A4)
+            c.setFont("DejaVuSans", 12)
+            width, height = A4
 
-        if report_type == "Остатки сырья":
-            c.drawString(50, y, "Название   Кол-во   Стоимость   Дата закупки")
-            y -= line_height
-            c.line(50, y, width - 50, y)
-            y -= 10
-            materials = self.session.query(RawMaterial).filter(RawMaterial.purchase_date.between(start_date, end_date)).all()
-            for m in materials:
-                c.drawString(50, y, f"{m.name}")
-                c.drawString(150, y, f"{m.quantity} кг")
-                c.drawString(250, y, f"{m.cost} руб/кг")
-                c.drawString(350, y, f"{m.purchase_date}")
+            c.setFont("DejaVuSans", 16)
+            c.drawCentredString(width / 2, height - 40, f"Отчет: {report_type}")
+            c.setFont("DejaVuSans", 12)
+            c.drawCentredString(width / 2, height - 60, f"Период: {start_date} - {end_date}")
+
+            y = height - 100
+            line_height = 20
+
+            if report_type == "Остатки сырья":
+                c.drawString(50, y, "Название   Кол-во   Ед.изм   Стоимость   Дата закупки")
                 y -= line_height
-                if y < 50:
-                    c.showPage()
-                    c.setFont("DejaVuSans", 12)
-                    y = height - 50
+                c.line(50, y, width - 50, y)
+                y -= 10
+                materials = self.session.query(RawMaterial).filter(RawMaterial.purchase_date.between(start_date, end_date)).all()
+                if not materials:
+                    c.drawString(50, y, "Данные за выбранный период отсутствуют")
+                else:
+                    for m in materials:
+                        c.drawString(50, y, f"{m.name}")
+                        c.drawString(150, y, f"{m.quantity}")
+                        c.drawString(250, y, f"{m.unit}")
+                        c.drawString(300, y, f"{m.cost} руб/{m.unit}")
+                        c.drawString(400, y, f"{m.purchase_date}")
+                        y -= line_height
+                        if y < 50:
+                            c.showPage()
+                            c.setFont("DejaVuSans", 12)
+                            y = height - 50
 
-        elif report_type == "Партии":
-            c.drawString(50, y, "№   Объем   Статус   Начало   Готовность")
-            y -= line_height
-            c.line(50, y, width - 50, y)
-            y -= 10
-            batches = self.session.query(Batch).filter(Batch.start_date.between(start_date, end_date)).all()
-            for b in batches:
-                c.drawString(50, y, f"{b.batch_id}")
-                c.drawString(100, y, f"{b.volume} л")
-                c.drawString(200, y, f"{b.status}")
-                c.drawString(300, y, f"{b.start_date}")
-                c.drawString(400, y, f"{b.end_date}")
+            elif report_type == "Партии":
+                c.drawString(50, y, "№   Объем   Статус   Начало   Готовность")
                 y -= line_height
-                if y < 50:
-                    c.showPage()
-                    c.setFont("DejaVuSans", 12)
-                    y = height - 50
+                c.line(50, y, width - 50, y)
+                y -= 10
+                batches = self.session.query(Batch).filter(Batch.start_date.between(start_date, end_date)).all()
+                if not batches:
+                    c.drawString(50, y, "Данные за выбранный период отсутствуют")
+                else:
+                    for b in batches:
+                        c.drawString(50, y, f"{b.batch_id}")
+                        c.drawString(100, y, f"{b.volume} л")
+                        c.drawString(200, y, f"{b.status}")
+                        c.drawString(300, y, f"{b.start_date}")
+                        c.drawString(400, y, f"{b.end_date or 'Не завершено'}")
+                        y -= line_height
+                        if y < 50:
+                            c.showPage()
+                            c.setFont("DejaVuSans", 12)
+                            y = height - 50
 
-        elif report_type == "Заказы":
-            c.drawString(50, y, "№   Клиент   Дата   Статус   Стоимость")
-            y -= line_height
-            c.line(50, y, width - 50, y)
-            y -= 10
-            orders = self.session.query(Order).filter(Order.order_date.between(start_date, end_date)).all()
-            for o in orders:
-                c.drawString(50, y, f"{o.order_id}")
-                c.drawString(100, y, f"{o.client.name}")
-                c.drawString(200, y, f"{o.order_date}")
-                c.drawString(300, y, f"{o.status}")
-                c.drawString(400, y, f"{o.total_order_cost} руб")
+            elif report_type == "Заказы":
+                c.drawString(50, y, "№   Клиент   Дата   Статус   Стоимость")
                 y -= line_height
-                if y < 50:
-                    c.showPage()
-                    c.setFont("DejaVuSans", 12)
-                    y = height - 50
+                c.line(50, y, width - 50, y)
+                y -= 10
+                orders = self.session.query(Order).filter(Order.order_date.between(start_date, end_date)).all()
+                if not orders:
+                    c.drawString(50, y, "Данные за выбранный период отсутствуют")
+                else:
+                    for o in orders:
+                        client = self.session.query(Client).filter_by(client_id=o.client_id).first()
+                        client_name = client.name if client else "Неизвестно"
+                        c.drawString(50, y, f"{o.order_id}")
+                        c.drawString(100, y, f"{client_name}")
+                        c.drawString(200, y, f"{o.order_date}")
+                        c.drawString(300, y, f"{o.status}")
+                        c.drawString(400, y, f"{o.total_order_cost} руб")
+                        y -= line_height
+                        if y < 50:
+                            c.showPage()
+                            c.setFont("DejaVuSans", 12)
+                            y = height - 50
 
-        elif report_type == "Доходы":
-            c.drawString(50, y, "Дата   Доход")
-            y -= line_height
-            c.line(50, y, width - 50, y)
-            y -= 10
-            orders = self.session.query(Order).filter(
-                Order.order_date.between(start_date, end_date),
-                Order.status == OrderStatus.COMPLETED.value
-            ).all()
-            income_by_date = {}
-            for o in orders:
-                income_by_date[o.order_date] = income_by_date.get(o.order_date, 0) + o.total_order_cost
-            for date, income in income_by_date.items():
-                c.drawString(50, y, f"{date}")
-                c.drawString(150, y, f"{income} руб")
+            elif report_type == "Доходы":
+                c.drawString(50, y, "Дата   Доход")
                 y -= line_height
-                if y < 50:
-                    c.showPage()
-                    c.setFont("DejaVuSans", 12)
-                    y = height - 50
+                c.line(50, y, width - 50, y)
+                y -= 10
+                orders = self.session.query(Order).filter(
+                    Order.order_date.between(start_date, end_date),
+                    Order.status == OrderStatus.COMPLETED.value
+                ).all()
+                if not orders:
+                    c.drawString(50, y, "Данные за выбранный период отсутствуют")
+                else:
+                    income_by_date = {}
+                    for o in orders:
+                        income_by_date[o.order_date] = income_by_date.get(o.order_date, 0) + o.total_order_cost
+                    for date, income in income_by_date.items():
+                        c.drawString(50, y, f"{date}")
+                        c.drawString(150, y, f"{income} руб")
+                        y -= line_height
+                        if y < 50:
+                            c.showPage()
+                            c.setFont("DejaVuSans", 12)
+                            y = height - 50
 
-        c.showPage()
-        c.save()
-        QMessageBox.information(self, "Успех", f"Отчет сохранен как {output_file}")
+            c.showPage()
+            c.save()
+            QMessageBox.information(self, "Успех", f"Отчет сохранен как {output_file}")
+        except Exception as e:
+            QMessageBox.critical(self, "Ошибка", f"Не удалось создать отчет: {str(e)}")
+        finally:
+            self.session.close()
 
     def init_users(self):
         self.user_tab = QWidget()
