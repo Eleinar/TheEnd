@@ -130,6 +130,71 @@ class LoginWindow(QDialog):
         self.user_id = user.user_id
         self.accept()
 
+class MainWindow(QMainWindow):
+    def __init__(self, role="Технолог", user_id=None):
+        super().__init__()
+        self.role = UserRole(role)
+        self.user_id = user_id
+        self.session = Session()
+        self.setWindowTitle("Учет медовых напитков")
+        self.showMaximized()  # Устанавливаем окно на весь экран
+        self.setWindowIcon(QIcon("icon.png"))
+
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+        layout = QVBoxLayout(central_widget)
+        self.tabs = QTabWidget()
+        layout.addWidget(self.tabs)
+
+        if self.role == UserRole.TECHNOLOGIST:
+            self.init_raw_materials()
+            self.init_production()
+        elif self.role == UserRole.ASSISTANT:
+            self.init_products()
+            self.init_orders()
+        elif self.role == UserRole.ENTREPRENEUR:
+            self.init_raw_materials()
+            self.init_production()
+            self.init_products()
+            self.init_orders()
+            self.init_reports()
+            self.init_charts()
+        elif self.role == UserRole.ADMIN:
+            self.init_users()
+
+        self.notification_label = QLabel("Уведомления: проверка...")
+        self.notification_label.setObjectName("notificationLabel")
+        layout.addWidget(self.notification_label)
+        self.update_notifications()
+
+        self.setStyleSheet(APP_STYLE)
+
+    def validate_and_accept(self):
+        login = self.login_input.text().strip()
+        password = self.password_input.text().strip()
+    
+        if not login or not password:
+            QMessageBox.warning(self, "Ошибка", "Заполните все поля")
+            return
+        if len(login) < 3:
+            QMessageBox.warning(self, "Ошибка", "Логин должен содержать минимум 3 символа")
+            return
+        if len(password) < 6:
+            QMessageBox.warning(self, "Ошибка", "Пароль должен содержать минимум 6 символов")
+            return
+    
+        user = self.session.query(User).filter_by(login=login).first()
+        if not user:
+            QMessageBox.warning(self, "Ошибка", "Неверный логин или пароль")
+            return
+    
+        if not bcrypt.checkpw(password.encode('utf-8'), user.password.encode('utf-8')):
+            QMessageBox.warning(self, "Ошибка", "Неверный логин или пароль")
+            return
+    
+        self.user_id = user.user_id
+        self.accept()
+
 class AddUserDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -894,6 +959,7 @@ class MainWindow(QMainWindow):
         self.raw_table = QTableWidget()
         self.raw_table.setColumnCount(4)
         self.raw_table.setHorizontalHeaderLabels(["Название", "Кол-во", "Стоимость", "Дата закупки"])
+        self.raw_table.setSizeAdjustPolicy(QTableWidget.AdjustToContents)  # Адаптация размера таблицы
         self.update_raw_table()
         raw_layout.addWidget(self.raw_table)
         button_layout = QHBoxLayout()
@@ -915,9 +981,10 @@ class MainWindow(QMainWindow):
             self.raw_table.setRowCount(len(materials))
             for i, m in enumerate(materials):
                 self.raw_table.setItem(i, 0, QTableWidgetItem(m.name))
-                self.raw_table.setItem(i, 1, QTableWidgetItem(f"{m.quantity} кг"))
-                self.raw_table.setItem(i, 2, QTableWidgetItem(f"{m.cost} руб/кг"))
+                self.raw_table.setItem(i, 1, QTableWidgetItem(f"{m.quantity} {m.unit}"))
+                self.raw_table.setItem(i, 2, QTableWidgetItem(f"{m.cost} руб/{m.unit}"))
                 self.raw_table.setItem(i, 3, QTableWidgetItem(str(m.purchase_date)))
+            self.raw_table.resizeColumnsToContents()  # Растягиваем ячейки по содержимому
         except Exception as e:
             QMessageBox.critical(self, "Ошибка", f"Не удалось подключиться к базе данных: {str(e)}")
             self.raw_table.setRowCount(0)
@@ -1007,6 +1074,7 @@ class MainWindow(QMainWindow):
             for i, r in enumerate(recipes):
                 self.recipe_table.setItem(i, 0, QTableWidgetItem(r.name))
                 self.recipe_table.setItem(i, 1, QTableWidgetItem(r.description))
+            self.recipe_table.resizeColumnsToContents()  # Растягиваем ячейки по содержимому
         except Exception as e:
             QMessageBox.critical(self, "Ошибка", f"Не удалось подключиться к базе данных: {str(e)}")
             self.recipe_table.setRowCount(0)
@@ -1055,7 +1123,8 @@ class MainWindow(QMainWindow):
                 status_combo.currentTextChanged.connect(lambda text, batch_id=b.batch_id: self.update_batch_status(batch_id, text))
                 self.batch_table.setCellWidget(i, 2, status_combo)
                 self.batch_table.setItem(i, 3, QTableWidgetItem(str(b.start_date)))
-                self.batch_table.setItem(i, 4, QTableWidgetItem(str(b.end_date)))
+                self.batch_table.setItem(i, 4, QTableWidgetItem(str(b.end_date or 'Не завершено')))
+            self.batch_table.resizeColumnsToContents()  # Растягиваем ячейки по содержимому
         except Exception as e:
             QMessageBox.critical(self, "Ошибка", f"Не удалось подключиться к базе данных: {str(e)}")
             self.batch_table.setRowCount(0)
@@ -1139,6 +1208,7 @@ class MainWindow(QMainWindow):
         self.product_table = QTableWidget()
         self.product_table.setColumnCount(5)
         self.product_table.setHorizontalHeaderLabels(["Название", "Объем", "Доступно", "Дата розлива", "Цена/л"])
+        self.product_table.setSizeAdjustPolicy(QTableWidget.AdjustToContents)  # Адаптация размера таблицы
         self.update_product_table()
         product_layout.addWidget(self.product_table)
 
@@ -1177,6 +1247,7 @@ class MainWindow(QMainWindow):
                 self.product_table.setItem(i, 2, QTableWidgetItem(f"{p.available_volume} л"))
                 self.product_table.setItem(i, 3, QTableWidgetItem(str(p.production_date)))
                 self.product_table.setItem(i, 4, QTableWidgetItem(f"{p.price_per_liter} руб"))
+            self.product_table.resizeColumnsToContents()  # Растягиваем ячейки по содержимому
         except Exception as e:
             QMessageBox.warning(self, "Ошибка", f"Ошибка при обновлении таблицы: {str(e)}")
             self.product_table.setRowCount(0)
@@ -1195,6 +1266,7 @@ class MainWindow(QMainWindow):
         self.client_table = QTableWidget()
         self.client_table.setColumnCount(4)
         self.client_table.setHorizontalHeaderLabels(["Имя", "Тип", "Контакт", "ИНН"])
+        self.client_table.setSizeAdjustPolicy(QTableWidget.AdjustToContents)  # Адаптация размера таблицы
         self.update_client_table()
         client_layout.addWidget(self.client_table)
         client_button_layout = QHBoxLayout()
@@ -1219,6 +1291,7 @@ class MainWindow(QMainWindow):
         self.order_table = QTableWidget()
         self.order_table.setColumnCount(5)
         self.order_table.setHorizontalHeaderLabels(["№", "Клиент", "Дата", "Статус", "Стоимость"])
+        self.order_table.setSizeAdjustPolicy(QTableWidget.AdjustToContents)  # Адаптация размера таблицы
         self.update_order_table()
         order_layout.addWidget(self.order_table)
         order_button_layout = QHBoxLayout()
@@ -1240,6 +1313,7 @@ class MainWindow(QMainWindow):
                 self.client_table.setItem(i, 1, QTableWidgetItem(c.type))
                 self.client_table.setItem(i, 2, QTableWidgetItem(c.contact))
                 self.client_table.setItem(i, 3, QTableWidgetItem(c.inn or "-"))
+            self.client_table.resizeColumnsToContents()  # Растягиваем ячейки по содержимому
         except Exception as e:
             QMessageBox.critical(self, "Ошибка", f"Не удалось подключиться к базе данных: {str(e)}")
             self.client_table.setRowCount(0)
@@ -1289,6 +1363,7 @@ class MainWindow(QMainWindow):
                 status_combo.currentTextChanged.connect(lambda text, order_id=o.order_id: self.update_order_status(order_id, text))
                 self.order_table.setCellWidget(i, 3, status_combo)
                 self.order_table.setItem(i, 4, QTableWidgetItem(f"{o.total_order_cost} руб"))
+            self.order_table.resizeColumnsToContents()  # Растягиваем ячейки по содержимому
         except Exception as e:
             QMessageBox.critical(self, "Ошибка", f"Не удалось подключиться к базе данных: {str(e)}")
             self.order_table.setRowCount(0)
@@ -1340,7 +1415,7 @@ class MainWindow(QMainWindow):
     
         self.report_button = QPushButton("Сформировать PDF")
         report_layout.addWidget(self.report_button)
-        
+
         self.report_button.clicked.connect(self.generate_report)
 
     def generate_report(self):
@@ -1486,6 +1561,7 @@ class MainWindow(QMainWindow):
         self.user_table = QTableWidget()
         self.user_table.setColumnCount(3)
         self.user_table.setHorizontalHeaderLabels(["Логин", "Пароль", "Роль"])
+        self.user_table.setSizeAdjustPolicy(QTableWidget.AdjustToContents)  # Адаптация размера таблицы
         self.update_user_table()
         user_layout.addWidget(self.user_table)
         button_layout = QHBoxLayout()
@@ -1509,6 +1585,7 @@ class MainWindow(QMainWindow):
                 self.user_table.setItem(i, 0, QTableWidgetItem(u.login))
                 self.user_table.setItem(i, 1, QTableWidgetItem("********"))
                 self.user_table.setItem(i, 2, QTableWidgetItem(u.role))
+            self.user_table.resizeColumnsToContents()  # Растягиваем ячейки по содержимому
         except Exception as e:
             QMessageBox.critical(self, "Ошибка", f"Не удалось подключиться к базе данных: {str(e)}")
             self.user_table.setRowCount(0)

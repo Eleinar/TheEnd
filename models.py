@@ -2,6 +2,7 @@ from sqlalchemy import create_engine, Column, Integer, String, Float, ForeignKey
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
 from enum import Enum as PyEnum
+from datetime import datetime
 
 Base = declarative_base()
 
@@ -138,6 +139,19 @@ class OrderItem(Base):
     total_cost = Column(Float, nullable=False)
     order = relationship("Order", back_populates="order_items")
     product = relationship("FinishedProduct", back_populates="order_items")
+    
+class PriceChange(Base):
+    __tablename__ = 'price_changes'
+
+    change_id = Column(Integer, primary_key=True)
+    table_name = Column(String(50), nullable=False, 
+                        server_default="raw_materials",
+                        doc="Table name where price changed ('raw_materials', 'batches', 'finished_products')")
+    record_id = Column(Integer, nullable=False)
+    old_price = Column(Float, nullable=False)
+    new_price = Column(Float, nullable=False)
+    change_date = Column(DateTime, nullable=False, default=datetime.utcnow)
+    login = Column(String(50), ForeignKey('users.login'), nullable=False)
 
 # Подключение к базе и создание таблиц
 engine = create_engine('postgresql://postgres:p0sTgr3s@82.202.138.183:5432/postgres', echo=True)
