@@ -2,11 +2,11 @@ import bcrypt
 from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                                QLineEdit, QPushButton, QTabWidget, QTableWidget, QTableWidgetItem, 
                                QComboBox, QDialog, QLabel, QFormLayout, QDoubleSpinBox, QDateEdit,
-                               QMessageBox, QFileDialog)
-from PySide6.QtCore import QDate, Qt
+                               QMessageBox, QFileDialog, QHeaderView)
+from PySide6.QtCore import QDate, Qt, QTimer
 from PySide6.QtGui import QIcon, QPixmap
 from sqlalchemy import func
-from models import Session, User, RawMaterial, Recipe, Batch, FinishedProduct, Client, Order, OrderItem, UserRole, BatchStatus, ClientType, OrderStatus
+from models import Session, User, RawMaterial, Recipe, Batch, FinishedProduct, Client, Order, OrderItem, UserRole, BatchStatus, ClientType, OrderStatus, PriceChange
 from datetime import datetime
 import matplotlib.pyplot as plt
 import os
@@ -14,6 +14,17 @@ from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
+
+def log_price_change(session, table_name, record_id, old_price, new_price, login):
+    price_change = PriceChange(
+        table_name=table_name,
+        record_id=record_id,
+        old_price=old_price,
+        new_price=new_price,
+        login=login
+    )
+    session.add(price_change)
+    session.commit()
 
 APP_STYLE = """
     QWidget {
@@ -137,7 +148,6 @@ class MainWindow(QMainWindow):
         self.user_id = user_id
         self.session = Session()
         self.setWindowTitle("Учет медовых напитков")
-        self.showMaximized()  # Устанавливаем окно на весь экран
         self.setWindowIcon(QIcon("icon.png"))
 
         central_widget = QWidget()
@@ -146,6 +156,17 @@ class MainWindow(QMainWindow):
         self.tabs = QTabWidget()
         layout.addWidget(self.tabs)
 
+        self.notification_label = QLabel("Уведомления: проверка...")
+        self.notification_label.setObjectName("notificationLabel")
+        layout.addWidget(self.notification_label)
+
+        central_widget.setLayout(layout)
+        self.showMaximized()
+        self.setStyleSheet(APP_STYLE)
+
+        QTimer.singleShot(0, self.initialize_content)
+
+    def initialize_content(self):
         if self.role == UserRole.TECHNOLOGIST:
             self.init_raw_materials()
             self.init_production()
@@ -162,791 +183,7 @@ class MainWindow(QMainWindow):
         elif self.role == UserRole.ADMIN:
             self.init_users()
 
-        self.notification_label = QLabel("Уведомления: проверка...")
-        self.notification_label.setObjectName("notificationLabel")
-        layout.addWidget(self.notification_label)
         self.update_notifications()
-
-        self.setStyleSheet(APP_STYLE)
-
-    def validate_and_accept(self):
-        login = self.login_input.text().strip()
-        password = self.password_input.text().strip()
-    
-        if not login or not password:
-            QMessageBox.warning(self, "Ошибка", "Заполните все поля")
-            return
-        if len(login) < 3:
-            QMessageBox.warning(self, "Ошибка", "Логин должен содержать минимум 3 символа")
-            return
-        if len(password) < 6:
-            QMessageBox.warning(self, "Ошибка", "Пароль должен содержать минимум 6 символов")
-            return
-    
-        user = self.session.query(User).filter_by(login=login).first()
-        if not user:
-            QMessageBox.warning(self, "Ошибка", "Неверный логин или пароль")
-            return
-    
-        if not bcrypt.checkpw(password.encode('utf-8'), user.password.encode('utf-8')):
-            QMessageBox.warning(self, "Ошибка", "Неверный логин или пароль")
-            return
-    
-        self.user_id = user.user_id
-        self.accept()
-
-class AddUserDialog(QDialog):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Добавить пользователя")
-        self.setFixedSize(300, 200)
-        self.setWindowIcon(QIcon("icon.png"))
-        self.session = Session()
-
-        layout = QFormLayout()
-        self.login_input = QLineEdit()
-        self.password_input = QLineEdit()
-        self.password_input.setEchoMode(QLineEdit.Password)
-        self.role_combo = QComboBox()
-        self.role_combo.addItems([role.value for role in UserRole])
-
-        layout.addRow("Логин:", self.login_input)
-        layout.addRow("Пароль:", self.password_input)
-        layout.addRow("Роль:", self.role_combo)
-
-        button_layout = QHBoxLayout()
-        self.create_button = QPushButton("Добавить")
-        self.cancel_button = QPushButton("Отмена")
-        button_layout.addWidget(self.create_button)
-        button_layout.addWidget(self.cancel_button)
-        layout.addRow(button_layout)
-
-        self.create_button.clicked.connect(self.create_user)
-        self.cancel_button.clicked.connect(self.reject)
-        self.setLayout(layout)
-        self.setStyleSheet(APP_STYLE)
-
-    def create_user(self):
-        login = self.login_input.text().strip()
-        password = self.password_input.text().strip()
-        role = self.role_combo.currentText()
-
-        if not login or not password:
-            QMessageBox.warning(self, "Ошибка", "Заполните все поля")
-            return
-        if len(login) < 3:
-            QMessageBox.warning(self, "Ошибка", "Логин должен содержать минимум 3 символа")
-            return
-        if len(password) < 6:
-            QMessageBox.warning(self, "Ошибка", "Пароль должен содержать минимум 6 символов")
-            return
-
-        existing_user = self.session.query(User).filter_by(login=login).first()
-        if existing_user:
-            QMessageBox.warning(self, "Ошибка", "Логин уже занят")
-            return
-
-        hashed_password = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt())
-        user = User(login=login, password=hashed_password.decode('utf-8'), role=role)
-        self.session.add(user)
-        self.session.commit()
-        self.accept()
-
-class EditUserDialog(QDialog):
-    def __init__(self, parent=None, user_id=None):
-        super().__init__(parent)
-        self.setWindowTitle("Редактировать пользователя")
-        self.setFixedSize(300, 200)
-        self.setWindowIcon(QIcon("icon.png"))
-        self.session = Session()
-        self.user_id = user_id
-        self.user = self.session.query(User).filter_by(user_id=user_id).first()
-
-        layout = QFormLayout()
-        self.login_input = QLineEdit(self.user.login)
-        self.password_input = QLineEdit()
-        self.password_input.setPlaceholderText("Оставьте пустым, чтобы не менять")
-        self.password_input.setEchoMode(QLineEdit.Password)
-        self.role_combo = QComboBox()
-        self.role_combo.addItems([role.value for role in UserRole])
-        self.role_combo.setCurrentText(self.user.role)
-
-        layout.addRow("Логин:", self.login_input)
-        layout.addRow("Пароль:", self.password_input)
-        layout.addRow("Роль:", self.role_combo)
-
-        button_layout = QHBoxLayout()
-        self.save_button = QPushButton("Сохранить")
-        self.cancel_button = QPushButton("Отмена")
-        button_layout.addWidget(self.save_button)
-        button_layout.addWidget(self.cancel_button)
-        layout.addRow(button_layout)
-
-        self.save_button.clicked.connect(self.save_user)
-        self.cancel_button.clicked.connect(self.reject)
-        self.setLayout(layout)
-        self.setStyleSheet(APP_STYLE)
-
-    def save_user(self):
-        login = self.login_input.text().strip()
-        password = self.password_input.text().strip()
-        role = self.role_combo.currentText()
-
-        if not login:
-            QMessageBox.warning(self, "Ошибка", "Логин не может быть пустым")
-            return
-        if len(login) < 3:
-            QMessageBox.warning(self, "Ошибка", "Логин должен содержать минимум 3 символа")
-            return
-        if password and len(password) < 6:
-            QMessageBox.warning(self, "Ошибка", "Пароль должен содержать минимум 6 символов")
-            return
-
-        existing_user = self.session.query(User).filter(User.login == login, User.user_id != self.user_id).first()
-        if existing_user:
-            QMessageBox.warning(self, "Ошибка", "Логин уже занят")
-            return
-
-        self.user.login = login
-        if password:
-            self.user.password = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
-        self.user.role = role
-        self.session.commit()
-        self.accept()
-
-class AddRawMaterialDialog(QDialog):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Добавить закупку")
-        self.setFixedSize(350, 300)  # Увеличил размер для нового поля
-        self.setWindowIcon(QIcon("icon.png"))
-        self.session = Session()
-
-        layout = QFormLayout()
-        self.name_input = QLineEdit()
-        self.quantity_spin = QDoubleSpinBox()
-        self.quantity_spin.setRange(0, 10000)
-        self.quantity_spin.setValue(10)
-        self.unit_combo = QComboBox()
-        self.unit_combo.addItems(["кг", "л", "шт"])
-        self.unit_combo.setCurrentText("кг")  # Значение по умолчанию
-        self.cost_spin = QDoubleSpinBox()
-        self.cost_spin.setRange(0, 10000)
-        self.cost_spin.setValue(100)
-        self.cost_spin.setSuffix(" руб/ед")
-        self.purchase_date = QDateEdit()
-        self.purchase_date.setDate(QDate.currentDate())
-
-        layout.addRow("Название:", self.name_input)
-        layout.addRow("Количество:", self.quantity_spin)
-        layout.addRow("Единица измерения:", self.unit_combo)
-        layout.addRow("Стоимость:", self.cost_spin)
-        layout.addRow("Дата закупки:", self.purchase_date)
-
-        button_layout = QHBoxLayout()
-        self.create_button = QPushButton("Добавить")
-        self.cancel_button = QPushButton("Отмена")
-        button_layout.addWidget(self.create_button)
-        button_layout.addWidget(self.cancel_button)
-        layout.addRow(button_layout)
-
-        self.create_button.clicked.connect(self.create_raw_material)
-        self.cancel_button.clicked.connect(self.reject)
-        self.setLayout(layout)
-
-    def create_raw_material(self):
-        name = self.name_input.text().strip()
-        quantity = self.quantity_spin.value()
-        unit = self.unit_combo.currentText()
-        cost = self.cost_spin.value()
-        purchase_date = self.purchase_date.date().toString("yyyy-MM-dd")
-
-        if not name or quantity <= 0 or cost <= 0:
-            QMessageBox.warning(self, "Ошибка", "Заполните название, количество и стоимость корректно")
-            return
-
-        try:
-            material = RawMaterial(
-                name=name,
-                quantity=quantity,
-                unit=unit,  # Передаем единицу измерения
-                cost=cost,
-                purchase_date=purchase_date,
-                min_quantity=0  # Предполагаемое значение, можно изменить
-            )
-            self.session.add(material)
-            self.session.commit()
-            self.accept()
-        except Exception as e:
-            self.session.rollback()  # Откатываем транзакцию при ошибке
-            QMessageBox.critical(self, "Ошибка", f"Не удалось добавить закупку: {str(e)}")
-        finally:
-            self.session.close()  # Закрываем сессию
-
-class EditRawMaterialDialog(QDialog):
-    def __init__(self, parent=None, material_id=None):
-        super().__init__(parent)
-        self.setWindowTitle("Редактировать закупку")
-        self.setFixedSize(350, 300)  # Увеличил размер для нового поля
-        self.setWindowIcon(QIcon("icon.png"))
-        self.session = Session()
-        self.material = self.session.query(RawMaterial).filter_by(material_id=material_id).first()
-
-        layout = QFormLayout()
-        self.name_input = QLineEdit(self.material.name)
-        self.quantity_spin = QDoubleSpinBox()
-        self.quantity_spin.setRange(0, 10000)
-        self.quantity_spin.setValue(self.material.quantity)
-        self.unit_combo = QComboBox()
-        self.unit_combo.addItems(["кг", "л", "шт"])
-        self.unit_combo.setCurrentText(self.material.unit if self.material.unit else "кг")  # Устанавливаем текущее значение
-        self.cost_spin = QDoubleSpinBox()
-        self.cost_spin.setRange(0, 10000)
-        self.cost_spin.setValue(self.material.cost)
-        self.cost_spin.setSuffix(" руб/ед")
-        self.purchase_date = QDateEdit()
-        purchase_date_str = str(self.material.purchase_date)
-        self.purchase_date.setDate(QDate.fromString(purchase_date_str, "yyyy-MM-dd"))
-
-        layout.addRow("Название:", self.name_input)
-        layout.addRow("Количество:", self.quantity_spin)
-        layout.addRow("Единица измерения:", self.unit_combo)
-        layout.addRow("Стоимость:", self.cost_spin)
-        layout.addRow("Дата закупки:", self.purchase_date)
-
-        button_layout = QHBoxLayout()
-        self.save_button = QPushButton("Сохранить")
-        self.cancel_button = QPushButton("Отмена")
-        button_layout.addWidget(self.save_button)
-        button_layout.addWidget(self.cancel_button)
-        layout.addRow(button_layout)
-
-        self.save_button.clicked.connect(self.save_material)
-        self.cancel_button.clicked.connect(self.reject)
-        self.setLayout(layout)
-
-    def save_material(self):
-        name = self.name_input.text().strip()
-        quantity = self.quantity_spin.value()
-        unit = self.unit_combo.currentText()
-        cost = self.cost_spin.value()
-        purchase_date = self.purchase_date.date().toString("yyyy-MM-dd")
-
-        if not name or quantity <= 0 or cost <= 0:
-            QMessageBox.warning(self, "Ошибка", "Заполните название, количество и стоимость корректно")
-            return
-
-        try:
-            self.material.name = name
-            self.material.quantity = quantity
-            self.material.unit = unit  # Обновляем единицу измерения
-            self.material.cost = cost
-            self.material.purchase_date = purchase_date
-            self.session.commit()
-            self.accept()
-        except Exception as e:
-            self.session.rollback()  # Откатываем транзакцию при ошибке
-            QMessageBox.critical(self, "Ошибка", f"Не удалось сохранить изменения: {str(e)}")
-        finally:
-            self.session.close()  # Закрываем сессию
-            
-class AddRecipeDialog(QDialog):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Добавить рецепт")
-        self.setFixedSize(350, 200)
-        self.setWindowIcon(QIcon("icon.png"))
-        self.session = Session()
-
-        layout = QFormLayout()
-        self.name_input = QLineEdit()
-        self.description_input = QLineEdit()
-
-        layout.addRow("Название:", self.name_input)
-        layout.addRow("Описание:", self.description_input)
-
-        button_layout = QHBoxLayout()
-        self.create_button = QPushButton("Добавить")
-        self.cancel_button = QPushButton("Отмена")
-        button_layout.addWidget(self.create_button)
-        button_layout.addWidget(self.cancel_button)
-        layout.addRow(button_layout)
-
-        self.create_button.clicked.connect(self.create_recipe)
-        self.cancel_button.clicked.connect(self.reject)
-        self.setLayout(layout)
-        self.setStyleSheet(APP_STYLE)
-
-    def create_recipe(self):
-        name = self.name_input.text().strip()
-        description = self.description_input.text().strip()
-        if not name or not description:
-            QMessageBox.warning(self, "Ошибка", "Заполните все поля")
-            return
-        recipe = Recipe(name=name, description=description)
-        self.session.add(recipe)
-        self.session.commit()
-        self.accept()
-
-class EditRecipeDialog(QDialog):
-    def __init__(self, parent=None, recipe_id=None):
-        super().__init__(parent)
-        self.setWindowTitle("Редактировать рецепт")
-        self.setFixedSize(350, 200)
-        self.setWindowIcon(QIcon("icon.png"))
-        self.session = Session()
-        self.recipe = self.session.query(Recipe).filter_by(recipe_id=recipe_id).first()
-
-        layout = QFormLayout()
-        self.name_input = QLineEdit(self.recipe.name)
-        self.description_input = QLineEdit(self.recipe.description)
-
-        layout.addRow("Название:", self.name_input)
-        layout.addRow("Описание:", self.description_input)
-
-        button_layout = QHBoxLayout()
-        self.save_button = QPushButton("Сохранить")
-        self.cancel_button = QPushButton("Отмена")
-        button_layout.addWidget(self.save_button)
-        button_layout.addWidget(self.cancel_button)
-        layout.addRow(button_layout)
-
-        self.save_button.clicked.connect(self.save_recipe)
-        self.cancel_button.clicked.connect(self.reject)
-        self.setLayout(layout)
-        self.setStyleSheet(APP_STYLE)
-
-    def save_recipe(self):
-        name = self.name_input.text().strip()
-        description = self.description_input.text().strip()
-        if not name or not description:
-            QMessageBox.warning(self, "Ошибка", "Заполните все поля")
-            return
-        self.recipe.name = name
-        self.recipe.description = description
-        self.session.commit()
-        self.accept()
-
-class CreateBatchDialog(QDialog):
-    def __init__(self, parent=None, current_user_id=None):
-        super().__init__(parent)
-        self.setWindowTitle("Создать партию")
-        self.setFixedSize(350, 250)
-        self.setWindowIcon(QIcon("icon.png"))
-        self.session = Session()
-        self.current_user_id = current_user_id
-
-        layout = QFormLayout()
-        self.recipe_combo = QComboBox()
-        recipes = self.session.query(Recipe).all()
-        self.recipe_combo.addItems([r.name for r in recipes])
-        self.volume_spin = QDoubleSpinBox()
-        self.volume_spin.setRange(1, 1000)
-        self.volume_spin.setValue(250)
-        self.volume_spin.setSuffix(" л")
-        self.start_date = QDateEdit()
-        self.start_date.setDate(QDate.currentDate())
-        self.price_spin = QDoubleSpinBox()
-        self.price_spin.setRange(0, 10000)
-        self.price_spin.setValue(500)
-        self.price_spin.setSuffix(" руб/л")
-
-        layout.addRow("Рецепт:", self.recipe_combo)
-        layout.addRow("Объем:", self.volume_spin)
-        layout.addRow("Дата начала:", self.start_date)
-        layout.addRow("Цена за литр:", self.price_spin)
-
-        button_layout = QHBoxLayout()
-        self.create_button = QPushButton("Создать")
-        self.cancel_button = QPushButton("Отмена")
-        button_layout.addWidget(self.create_button)
-        button_layout.addWidget(self.cancel_button)
-        layout.addRow(button_layout)
-
-        self.create_button.clicked.connect(self.create_batch)
-        self.cancel_button.clicked.connect(self.reject)
-        self.setLayout(layout)
-        self.setStyleSheet(APP_STYLE)
-
-    def create_batch(self):
-        recipe_name = self.recipe_combo.currentText()
-        recipe = self.session.query(Recipe).filter_by(name=recipe_name).first()
-        volume = self.volume_spin.value()
-        price = self.price_spin.value()
-        if not recipe or volume <= 0 or price < 0:
-            QMessageBox.warning(self, "Ошибка", "Выберите рецепт, объем > 0, цена >= 0")
-            return
-
-        honey = self.session.query(RawMaterial).filter_by(name="Мед").first()
-        if not honey or honey.quantity < volume:
-            QMessageBox.warning(self, "Ошибка", f"Недостаточно меда (нужно {volume} кг, есть {honey.quantity if honey else 0} кг)")
-            return
-
-        batch = Batch(
-            recipe_id=recipe.recipe_id,
-            volume=volume,
-            start_date=self.start_date.date().toString("yyyy-MM-dd"),
-            end_date=self.start_date.date().addDays(14).toString("yyyy-MM-dd"),
-            status=BatchStatus.FERMENTING.value,
-            user_id=self.current_user_id,
-            price_per_liter=price
-        )
-        self.session.add(batch)
-        self.session.commit()
-
-        honey.quantity -= volume
-        self.session.commit()
-
-        self.accept()
-
-class EditBatchDialog(QDialog):
-    def __init__(self, parent=None, batch_id=None):
-        super().__init__(parent)
-        self.setWindowTitle("Редактировать партию")
-        self.setFixedSize(350, 250)
-        self.setWindowIcon(QIcon("icon.png"))
-        self.session = Session()
-        self.batch = self.session.query(Batch).filter_by(batch_id=batch_id).first()
-
-        layout = QFormLayout()
-        self.recipe_combo = QComboBox()
-        recipes = self.session.query(Recipe).all()
-        self.recipe_combo.addItems([r.name for r in recipes])
-        self.recipe_combo.setCurrentText(self.batch.recipe.name)
-        self.volume_spin = QDoubleSpinBox()
-        self.volume_spin.setRange(1, 1000)
-        self.volume_spin.setValue(self.batch.volume)
-        self.volume_spin.setSuffix(" л")
-        self.start_date = QDateEdit()
-        self.start_date.setDate(QDate.fromString(self.batch.start_date, "yyyy-MM-dd"))
-        self.price_spin = QDoubleSpinBox()
-        self.price_spin.setRange(0, 10000)
-        self.price_spin.setValue(self.batch.price_per_liter)
-        self.price_spin.setSuffix(" руб/л")
-
-        layout.addRow("Рецепт:", self.recipe_combo)
-        layout.addRow("Объем:", self.volume_spin)
-        layout.addRow("Дата начала:", self.start_date)
-        layout.addRow("Цена за литр:", self.price_spin)
-
-        button_layout = QHBoxLayout()
-        self.save_button = QPushButton("Сохранить")
-        self.cancel_button = QPushButton("Отмена")
-        button_layout.addWidget(self.save_button)
-        button_layout.addWidget(self.cancel_button)
-        layout.addRow(button_layout)
-
-        self.save_button.clicked.connect(self.save_batch)
-        self.cancel_button.clicked.connect(self.reject)
-        self.setLayout(layout)
-        self.setStyleSheet(APP_STYLE)
-
-    def save_batch(self):
-        recipe_name = self.recipe_combo.currentText()
-        recipe = self.session.query(Recipe).filter_by(name=recipe_name).first()
-        volume = self.volume_spin.value()
-        price = self.price_spin.value()
-        start_date = self.start_date.date().toString("yyyy-MM-dd")
-        if not recipe or volume <= 0 or price < 0:
-            QMessageBox.warning(self, "Ошибка", "Выберите рецепт, объем > 0, цена >= 0")
-            return
-
-        self.batch.recipe_id = recipe.recipe_id
-        self.batch.volume = volume
-        self.batch.start_date = start_date
-        self.batch.end_date = self.start_date.date().addDays(14).toString("yyyy-MM-dd")
-        self.batch.price_per_liter = price
-        self.session.commit()
-        self.accept()
-
-class AddClientDialog(QDialog):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Добавить клиента")
-        self.setFixedSize(350, 250)
-        self.setWindowIcon(QIcon("icon.png"))
-        self.session = Session()
-
-        layout = QFormLayout()
-        self.name_input = QLineEdit()
-        self.type_combo = QComboBox()
-        self.type_combo.addItems([t.value for t in ClientType])
-        self.contact_input = QLineEdit()
-        self.inn_input = QLineEdit()
-
-        layout.addRow("Имя:", self.name_input)
-        layout.addRow("Тип:", self.type_combo)
-        layout.addRow("Контакт:", self.contact_input)
-        layout.addRow("ИНН (опционально):", self.inn_input)
-
-        button_layout = QHBoxLayout()
-        self.create_button = QPushButton("Добавить")
-        self.cancel_button = QPushButton("Отмена")
-        button_layout.addWidget(self.create_button)
-        button_layout.addWidget(self.cancel_button)
-        layout.addRow(button_layout)
-
-        self.create_button.clicked.connect(self.create_client)
-        self.cancel_button.clicked.connect(self.reject)
-        self.setLayout(layout)
-        self.setStyleSheet(APP_STYLE)
-
-    def create_client(self):
-        name = self.name_input.text().strip()
-        type_ = self.type_combo.currentText()
-        contact = self.contact_input.text().strip()
-        inn = self.inn_input.text().strip() or None
-        if not name or not contact:
-            QMessageBox.warning(self, "Ошибка", "Заполните имя и контакт")
-            return
-        client = Client(name=name, type=type_, contact=contact, inn=inn)
-        self.session.add(client)
-        self.session.commit()
-        self.accept()
-
-class EditClientDialog(QDialog):
-    def __init__(self, parent=None, client_id=None):
-        super().__init__(parent)
-        self.setWindowTitle("Редактировать клиента")
-        self.setFixedSize(350, 250)
-        self.setWindowIcon(QIcon("icon.png"))
-        self.session = Session()
-        self.client = self.session.query(Client).filter_by(client_id=client_id).first()
-
-        layout = QFormLayout()
-        self.name_input = QLineEdit(self.client.name)
-        self.type_combo = QComboBox()
-        self.type_combo.addItems([t.value for t in ClientType])
-        self.type_combo.setCurrentText(self.client.type)
-        self.contact_input = QLineEdit(self.client.contact)
-        self.inn_input = QLineEdit(self.client.inn or "")
-
-        layout.addRow("Имя:", self.name_input)
-        layout.addRow("Тип:", self.type_combo)
-        layout.addRow("Контакт:", self.contact_input)
-        layout.addRow("ИНН (опционально):", self.inn_input)
-
-        button_layout = QHBoxLayout()
-        self.save_button = QPushButton("Сохранить")
-        self.cancel_button = QPushButton("Отмена")
-        button_layout.addWidget(self.save_button)
-        button_layout.addWidget(self.cancel_button)
-        layout.addRow(button_layout)
-
-        self.save_button.clicked.connect(self.save_client)
-        self.cancel_button.clicked.connect(self.reject)
-        self.setLayout(layout)
-        self.setStyleSheet(APP_STYLE)
-
-    def save_client(self):
-        name = self.name_input.text().strip()
-        type_ = self.type_combo.currentText()
-        contact = self.contact_input.text().strip()
-        inn = self.inn_input.text().strip() or None
-        if not name or not contact:
-            QMessageBox.warning(self, "Ошибка", "Заполните имя и контакт")
-            return
-        self.client.name = name
-        self.client.type = type_
-        self.client.contact = contact
-        self.client.inn = inn
-        self.session.commit()
-        self.accept()
-
-class AddOrderDialog(QDialog):
-    def __init__(self, parent=None, current_user_id=None):
-        super().__init__(parent)
-        self.setWindowTitle("Добавить заказ")
-        self.setFixedSize(600, 500)
-        self.setWindowIcon(QIcon("icon.png"))
-        self.session = Session()
-        self.current_user_id = current_user_id
-
-        layout = QVBoxLayout()
-        self.client_combo = QComboBox()
-        clients = self.session.query(Client).all()
-        self.client_combo.addItems([c.name for c in clients])
-        layout.addWidget(QLabel("Клиент:"))
-        layout.addWidget(self.client_combo)
-
-        self.items_table = QTableWidget(0, 3)
-        self.items_table.setHorizontalHeaderLabels(["Медовуха", "Объем (л)", "Стоимость (руб)"])
-        layout.addWidget(QLabel("Позиции:"))
-        layout.addWidget(self.items_table)
-
-        self.add_item_button = QPushButton("Добавить позицию")
-        self.add_item_button.clicked.connect(self.add_item)
-        layout.addWidget(self.add_item_button)
-
-        self.total_label = QLabel("Общая стоимость: 0 руб")
-        layout.addWidget(self.total_label)
-
-        self.date_edit = QDateEdit()
-        self.date_edit.setDate(QDate.currentDate())
-        layout.addWidget(QLabel("Дата:"))
-        layout.addWidget(self.date_edit)
-
-        button_layout = QHBoxLayout()
-        self.create_button = QPushButton("Создать")
-        self.cancel_button = QPushButton("Отмена")
-        button_layout.addWidget(self.create_button)
-        button_layout.addWidget(self.cancel_button)
-        layout.addLayout(button_layout)
-
-        self.create_button.clicked.connect(self.create_order)
-        self.cancel_button.clicked.connect(self.reject)
-        self.setLayout(layout)
-
-    def add_item(self):
-        """Добавляет новую строку для позиции заказа с выпадающим списком медовух."""
-        row_position = self.items_table.rowCount()
-        self.items_table.insertRow(row_position)
-        
-        # Выпадающий список медовух (названия из рецептов)
-        product_combo = QComboBox()
-        finished_products = self.session.query(FinishedProduct).join(Batch).join(Recipe).all()
-        self.products = [
-            (fp.product_id, session.query(Recipe).filter_by(recipe_id=fp.batch.recipe_id).first().name, fp.available_volume, fp.price_per_liter)
-            for fp in finished_products
-            for session in [Session()]  # Создаем новую сессию для запроса
-            if session.query(Recipe).filter_by(recipe_id=fp.batch.recipe_id).first()
-        ]
-        product_combo.addItems([p[1] for p in self.products])  # Отображаем названия медовух
-        product_combo.currentIndexChanged.connect(lambda: self.update_cost(row_position))
-        self.items_table.setCellWidget(row_position, 0, product_combo)
-        
-        # Поле для ввода объема
-        volume_input = QDoubleSpinBox()
-        volume_input.setRange(1, 1000)
-        volume_input.setValue(10)
-        volume_input.valueChanged.connect(lambda: self.update_cost(row_position))
-        self.items_table.setCellWidget(row_position, 1, volume_input)
-        
-        # Поле для стоимости (рассчитываем сразу)
-        cost_item = QTableWidgetItem("0 руб")
-        self.items_table.setItem(row_position, 2, cost_item)
-        
-        # Рассчитываем стоимость сразу после добавления
-        self.update_cost(row_position)
-
-    def update_cost(self, row):
-        """Обновляет стоимость позиции на основе объема и выбранного продукта."""
-        volume = self.items_table.cellWidget(row, 1).value()
-        product_combo = self.items_table.cellWidget(row, 0)
-        product_index = product_combo.currentIndex()
-        if product_index >= 0 and product_index < len(self.products):
-            _, _, _, price_per_liter = self.products[product_index]
-            cost = volume * price_per_liter
-            self.items_table.setItem(row, 2, QTableWidgetItem(f"{cost:.2f} руб"))
-            self.update_total()
-
-    def update_total(self):
-        """Обновляет общую стоимость заказа."""
-        total = 0
-        for row in range(self.items_table.rowCount()):
-            cost_item = self.items_table.item(row, 2)
-            if cost_item and cost_item.text().replace(" руб", "").replace(".", "").replace("-", "").isdigit():
-                total += float(cost_item.text().replace(" руб", ""))
-        self.total_label.setText(f"Общая стоимость: {total:.2f} руб")
-
-    def create_order(self):
-        """Создает новый заказ и добавляет позиции."""
-        client_name = self.client_combo.currentText()
-        client = self.session.query(Client).filter_by(name=client_name).first()
-        if not client:
-            QMessageBox.warning(self, "Ошибка", "Выберите клиента")
-            return
-
-        if self.items_table.rowCount() == 0:
-            QMessageBox.warning(self, "Ошибка", "Добавьте хотя бы одну позицию")
-            return
-
-        for row in range(self.items_table.rowCount()):
-            product_combo = self.items_table.cellWidget(row, 0)
-            volume = self.items_table.cellWidget(row, 1).value()
-            product_index = product_combo.currentIndex()
-            _, _, available_volume, _ = self.products[product_index]
-            if volume > available_volume:
-                QMessageBox.warning(self, "Ошибка", f"Недостаточно продукции (доступно {available_volume} л)")
-                return
-
-        try:
-            order = Order(
-                client_id=client.client_id,
-                order_date=self.date_edit.date().toString("yyyy-MM-dd"),
-                status=OrderStatus.PENDING.value,
-                user_id=self.current_user_id,
-                total_order_cost=0
-            )
-            self.session.add(order)
-            self.session.commit()
-
-            total_cost = 0
-            for row in range(self.items_table.rowCount()):
-                product_combo = self.items_table.cellWidget(row, 0)
-                volume = self.items_table.cellWidget(row, 1).value()
-                product_index = product_combo.currentIndex()
-                product_id, _, _, price_per_liter = self.products[product_index]
-                cost = volume * price_per_liter
-                total_cost += cost
-                order_item = OrderItem(
-                    order_id=order.order_id,
-                    product_id=product_id,  # Передаем только product_id
-                    volume=volume,
-                    total_cost=cost
-                )
-                self.session.add(order_item)
-                product = self.session.query(FinishedProduct).filter_by(product_id=product_id).first()
-                product.available_volume -= volume
-
-            order.total_order_cost = total_cost
-            self.session.commit()
-            QMessageBox.information(self, "Успех", "Заказ создан")
-            self.accept()
-        except Exception as e:
-            self.session.rollback()
-            QMessageBox.critical(self, "Ошибка", f"Не удалось создать заказ: {str(e)}")
-        finally:
-            self.session.close()
-
-class MainWindow(QMainWindow):
-    def __init__(self, role="Технолог", user_id=None):
-        super().__init__()
-        self.role = UserRole(role)
-        self.user_id = user_id
-        self.session = Session()
-        self.setWindowTitle("Учет медовых напитков")
-        self.setGeometry(100, 100, 800, 600)
-        self.setWindowIcon(QIcon("icon.png"))
-
-        central_widget = QWidget()
-        self.setCentralWidget(central_widget)
-        layout = QVBoxLayout(central_widget)
-        self.tabs = QTabWidget()
-        layout.addWidget(self.tabs)
-
-        if self.role == UserRole.TECHNOLOGIST:
-            self.init_raw_materials()
-            self.init_production()
-        elif self.role == UserRole.ASSISTANT:
-            self.init_products()
-            self.init_orders()
-        elif self.role == UserRole.ENTREPRENEUR:
-            self.init_raw_materials()
-            self.init_production()
-            self.init_products()
-            self.init_orders()
-            self.init_reports()
-            self.init_charts()
-        elif self.role == UserRole.ADMIN:
-            self.init_users()
-
-        self.notification_label = QLabel("Уведомления: проверка...")
-        self.notification_label.setObjectName("notificationLabel")
-        layout.addWidget(self.notification_label)
-        self.update_notifications()
-
-        self.setStyleSheet(APP_STYLE)
 
     def init_raw_materials(self):
         self.raw_tab = QWidget()
@@ -959,7 +196,8 @@ class MainWindow(QMainWindow):
         self.raw_table = QTableWidget()
         self.raw_table.setColumnCount(4)
         self.raw_table.setHorizontalHeaderLabels(["Название", "Кол-во", "Стоимость", "Дата закупки"])
-        self.raw_table.setSizeAdjustPolicy(QTableWidget.AdjustToContents)  # Адаптация размера таблицы
+        self.raw_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.raw_table.setSizeAdjustPolicy(QTableWidget.AdjustToContents)
         self.update_raw_table()
         raw_layout.addWidget(self.raw_table)
         button_layout = QHBoxLayout()
@@ -984,7 +222,8 @@ class MainWindow(QMainWindow):
                 self.raw_table.setItem(i, 1, QTableWidgetItem(f"{m.quantity} {m.unit}"))
                 self.raw_table.setItem(i, 2, QTableWidgetItem(f"{m.cost} руб/{m.unit}"))
                 self.raw_table.setItem(i, 3, QTableWidgetItem(str(m.purchase_date)))
-            self.raw_table.resizeColumnsToContents()  # Растягиваем ячейки по содержимому
+            self.raw_table.resizeColumnsToContents()
+            self.raw_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         except Exception as e:
             QMessageBox.critical(self, "Ошибка", f"Не удалось подключиться к базе данных: {str(e)}")
             self.raw_table.setRowCount(0)
@@ -996,7 +235,7 @@ class MainWindow(QMainWindow):
             return
         name = self.raw_table.item(selected_row, 0).text()
         material = self.session.query(RawMaterial).filter_by(name=name).first()
-        dialog = EditRawMaterialDialog(self, material.material_id)
+        dialog = EditRawMaterialDialog(self, material.material_id, self.user_id)
         if dialog.exec() == QDialog.Accepted:
             self.update_raw_table()
             self.update_notifications()
@@ -1028,6 +267,8 @@ class MainWindow(QMainWindow):
         self.recipe_table = QTableWidget()
         self.recipe_table.setColumnCount(2)
         self.recipe_table.setHorizontalHeaderLabels(["Название", "Описание"])
+        self.recipe_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.recipe_table.setSizeAdjustPolicy(QTableWidget.AdjustToContents)
         self.update_recipe_table()
         recipe_layout.addWidget(self.recipe_table)
         recipe_button_layout = QHBoxLayout()
@@ -1052,6 +293,8 @@ class MainWindow(QMainWindow):
         self.batch_table = QTableWidget()
         self.batch_table.setColumnCount(5)
         self.batch_table.setHorizontalHeaderLabels(["№", "Объем", "Статус", "Начало", "Готовность"])
+        self.batch_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.batch_table.setSizeAdjustPolicy(QTableWidget.AdjustToContents)
         self.update_batch_table()
         batch_layout.addWidget(self.batch_table)
         batch_button_layout = QHBoxLayout()
@@ -1074,7 +317,8 @@ class MainWindow(QMainWindow):
             for i, r in enumerate(recipes):
                 self.recipe_table.setItem(i, 0, QTableWidgetItem(r.name))
                 self.recipe_table.setItem(i, 1, QTableWidgetItem(r.description))
-            self.recipe_table.resizeColumnsToContents()  # Растягиваем ячейки по содержимому
+            self.recipe_table.resizeColumnsToContents()
+            self.recipe_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         except Exception as e:
             QMessageBox.critical(self, "Ошибка", f"Не удалось подключиться к базе данных: {str(e)}")
             self.recipe_table.setRowCount(0)
@@ -1110,9 +354,7 @@ class MainWindow(QMainWindow):
     def update_batch_table(self):
         try:
             search_text = self.batch_search.text().lower()
-            batches = self.session.query(Batch).filter(
-                (Batch.status.ilike(f"%{search_text}%"))
-            ).all()
+            batches = self.session.query(Batch).filter(Batch.status.ilike(f"%{search_text}%")).all()
             self.batch_table.setRowCount(len(batches))
             for i, b in enumerate(batches):
                 self.batch_table.setItem(i, 0, QTableWidgetItem(str(b.batch_id)))
@@ -1124,7 +366,8 @@ class MainWindow(QMainWindow):
                 self.batch_table.setCellWidget(i, 2, status_combo)
                 self.batch_table.setItem(i, 3, QTableWidgetItem(str(b.start_date)))
                 self.batch_table.setItem(i, 4, QTableWidgetItem(str(b.end_date or 'Не завершено')))
-            self.batch_table.resizeColumnsToContents()  # Растягиваем ячейки по содержимому
+            self.batch_table.resizeColumnsToContents()
+            self.batch_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         except Exception as e:
             QMessageBox.critical(self, "Ошибка", f"Не удалось подключиться к базе данных: {str(e)}")
             self.batch_table.setRowCount(0)
@@ -1144,7 +387,7 @@ class MainWindow(QMainWindow):
                             available_volume=batch.volume,
                             production_date=str(batch.end_date),
                             price_per_liter=batch.price_per_liter,
-                            recipe_name=recipe_name  # Сохранение названия медовухи
+                            recipe_name=recipe_name
                         )
                         self.session.add(finished_product)
                 self.session.commit()
@@ -1160,7 +403,7 @@ class MainWindow(QMainWindow):
             return
         batch_id = int(self.batch_table.item(selected_row, 0).text())
         batch = self.session.query(Batch).filter_by(batch_id=batch_id).first()
-        dialog = EditBatchDialog(self, batch.batch_id)
+        dialog = EditBatchDialog(self, batch.batch_id, self.user_id)
         if dialog.exec() == QDialog.Accepted:
             self.update_batch_table()
             self.update_product_table()
@@ -1208,7 +451,8 @@ class MainWindow(QMainWindow):
         self.product_table = QTableWidget()
         self.product_table.setColumnCount(5)
         self.product_table.setHorizontalHeaderLabels(["Название", "Объем", "Доступно", "Дата розлива", "Цена/л"])
-        self.product_table.setSizeAdjustPolicy(QTableWidget.AdjustToContents)  # Адаптация размера таблицы
+        self.product_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.product_table.setSizeAdjustPolicy(QTableWidget.AdjustToContents)
         self.update_product_table()
         product_layout.addWidget(self.product_table)
 
@@ -1247,7 +491,8 @@ class MainWindow(QMainWindow):
                 self.product_table.setItem(i, 2, QTableWidgetItem(f"{p.available_volume} л"))
                 self.product_table.setItem(i, 3, QTableWidgetItem(str(p.production_date)))
                 self.product_table.setItem(i, 4, QTableWidgetItem(f"{p.price_per_liter} руб"))
-            self.product_table.resizeColumnsToContents()  # Растягиваем ячейки по содержимому
+            self.product_table.resizeColumnsToContents()
+            self.product_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         except Exception as e:
             QMessageBox.warning(self, "Ошибка", f"Ошибка при обновлении таблицы: {str(e)}")
             self.product_table.setRowCount(0)
@@ -1266,7 +511,8 @@ class MainWindow(QMainWindow):
         self.client_table = QTableWidget()
         self.client_table.setColumnCount(4)
         self.client_table.setHorizontalHeaderLabels(["Имя", "Тип", "Контакт", "ИНН"])
-        self.client_table.setSizeAdjustPolicy(QTableWidget.AdjustToContents)  # Адаптация размера таблицы
+        self.client_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.client_table.setSizeAdjustPolicy(QTableWidget.AdjustToContents)
         self.update_client_table()
         client_layout.addWidget(self.client_table)
         client_button_layout = QHBoxLayout()
@@ -1291,7 +537,8 @@ class MainWindow(QMainWindow):
         self.order_table = QTableWidget()
         self.order_table.setColumnCount(5)
         self.order_table.setHorizontalHeaderLabels(["№", "Клиент", "Дата", "Статус", "Стоимость"])
-        self.order_table.setSizeAdjustPolicy(QTableWidget.AdjustToContents)  # Адаптация размера таблицы
+        self.order_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.order_table.setSizeAdjustPolicy(QTableWidget.AdjustToContents)
         self.update_order_table()
         order_layout.addWidget(self.order_table)
         order_button_layout = QHBoxLayout()
@@ -1313,7 +560,8 @@ class MainWindow(QMainWindow):
                 self.client_table.setItem(i, 1, QTableWidgetItem(c.type))
                 self.client_table.setItem(i, 2, QTableWidgetItem(c.contact))
                 self.client_table.setItem(i, 3, QTableWidgetItem(c.inn or "-"))
-            self.client_table.resizeColumnsToContents()  # Растягиваем ячейки по содержимому
+            self.client_table.resizeColumnsToContents()
+            self.client_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         except Exception as e:
             QMessageBox.critical(self, "Ошибка", f"Не удалось подключиться к базе данных: {str(e)}")
             self.client_table.setRowCount(0)
@@ -1363,7 +611,8 @@ class MainWindow(QMainWindow):
                 status_combo.currentTextChanged.connect(lambda text, order_id=o.order_id: self.update_order_status(order_id, text))
                 self.order_table.setCellWidget(i, 3, status_combo)
                 self.order_table.setItem(i, 4, QTableWidgetItem(f"{o.total_order_cost} руб"))
-            self.order_table.resizeColumnsToContents()  # Растягиваем ячейки по содержимому
+            self.order_table.resizeColumnsToContents()
+            self.order_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         except Exception as e:
             QMessageBox.critical(self, "Ошибка", f"Не удалось подключиться к базе данных: {str(e)}")
             self.order_table.setRowCount(0)
@@ -1452,9 +701,14 @@ class MainWindow(QMainWindow):
 
             y = height - 100
             line_height = 20
+            col_widths = [120, 80, 60, 80, 140]
+            col_widths_income = [100, 100]
 
             if report_type == "Остатки сырья":
-                c.drawString(50, y, "Название   Кол-во   Ед.изм   Стоимость   Дата закупки")
+                headers = ["Название", "Кол-во", "Ед.изм", "Стоимость", "Дата закупки"]
+                x_positions = [50, 190, 270, 330, 410]
+                for i, header in enumerate(headers):
+                    c.drawCentredString(x_positions[i] + col_widths[i] / 2, y, header)
                 y -= line_height
                 c.line(50, y, width - 50, y)
                 y -= 10
@@ -1463,19 +717,26 @@ class MainWindow(QMainWindow):
                     c.drawString(50, y, "Данные за выбранный период отсутствуют")
                 else:
                     for m in materials:
-                        c.drawString(50, y, f"{m.name}")
-                        c.drawString(150, y, f"{m.quantity}")
-                        c.drawString(250, y, f"{m.unit}")
-                        c.drawString(300, y, f"{m.cost} руб/{m.unit}")
-                        c.drawString(400, y, f"{m.purchase_date}")
+                        c.drawString(x_positions[0] + 27, y, f"{m.name[:15]:<15}")
+                        c.drawCentredString(x_positions[1] + col_widths[1] / 2, y, f"{m.quantity:>6.2f}")
+                        c.drawCentredString(x_positions[2] + col_widths[2] / 2, y, f"{m.unit}")
+                        c.drawRightString(x_positions[3] + col_widths[3], y, f"{m.cost:>6.2f} руб")
+                        c.drawString(x_positions[4] + 30, y, f"{m.purchase_date}")
                         y -= line_height
-                        if y < 50:
+                        if y < 100:
                             c.showPage()
-                            c.setFont("DejaVuSans", 12)
                             y = height - 50
+                            for i, header in enumerate(headers):
+                                c.drawCentredString(x_positions[i] + col_widths[i] / 2, y, header)
+                            y -= line_height
+                            c.line(50, y, width - 50, y)
+                            y -= 10
 
             elif report_type == "Партии":
-                c.drawString(50, y, "№   Объем   Статус   Начало   Готовность")
+                headers = ["№", "Объем", "Статус", "Начало", "Готовность"]
+                x_positions = [50, 150, 230, 290, 370]
+                for i, header in enumerate(headers):
+                    c.drawCentredString(x_positions[i] + col_widths[i] / 2, y, header)
                 y -= line_height
                 c.line(50, y, width - 50, y)
                 y -= 10
@@ -1484,19 +745,26 @@ class MainWindow(QMainWindow):
                     c.drawString(50, y, "Данные за выбранный период отсутствуют")
                 else:
                     for b in batches:
-                        c.drawString(50, y, f"{b.batch_id}")
-                        c.drawString(100, y, f"{b.volume} л")
-                        c.drawString(200, y, f"{b.status}")
-                        c.drawString(300, y, f"{b.start_date}")
-                        c.drawString(400, y, f"{b.end_date or 'Не завершено'}")
+                        c.drawCentredString(x_positions[0] + col_widths[0] / 2, y, str(b.batch_id))
+                        c.drawRightString(x_positions[1] + col_widths[1], y, f"{b.volume:>6.2f} л")
+                        c.drawCentredString(x_positions[2] + col_widths[2] / 2, y, f"{b.status}")
+                        c.drawString(x_positions[3], y, f"{b.start_date}")
+                        c.drawString(x_positions[4], y, f"{b.end_date or 'Не завершено'}")
                         y -= line_height
-                        if y < 50:
+                        if y < 100:
                             c.showPage()
-                            c.setFont("DejaVuSans", 12)
                             y = height - 50
+                            for i, header in enumerate(headers):
+                                c.drawCentredString(x_positions[i] + col_widths[i] / 2, y, header)
+                            y -= line_height
+                            c.line(50, y, width - 50, y)
+                            y -= 10
 
             elif report_type == "Заказы":
-                c.drawString(50, y, "№   Клиент   Дата   Статус   Стоимость")
+                headers = ["№", "Клиент", "Дата", "Статус", "Стоимость"]
+                x_positions = [50, 150, 230, 290, 370]
+                for i, header in enumerate(headers):
+                    c.drawCentredString(x_positions[i] + col_widths[i] / 2, y, header)
                 y -= line_height
                 c.line(50, y, width - 50, y)
                 y -= 10
@@ -1507,19 +775,26 @@ class MainWindow(QMainWindow):
                     for o in orders:
                         client = self.session.query(Client).filter_by(client_id=o.client_id).first()
                         client_name = client.name if client else "Неизвестно"
-                        c.drawString(50, y, f"{o.order_id}")
-                        c.drawString(100, y, f"{client_name}")
-                        c.drawString(200, y, f"{o.order_date}")
-                        c.drawString(300, y, f"{o.status}")
-                        c.drawString(400, y, f"{o.total_order_cost} руб")
+                        c.drawCentredString(x_positions[0] + col_widths[0] / 2, y, str(o.order_id))
+                        c.drawRightString(x_positions[1] + col_widths[1], y, f"{client_name[:15]:<15}")
+                        c.drawString(x_positions[2], y, f"{o.order_date}")
+                        c.drawCentredString(x_positions[3] + col_widths[3] / 2, y, f"{o.status}")
+                        c.drawRightString(x_positions[4] + col_widths[4], y, f"{o.total_order_cost:>8.2f} руб")
                         y -= line_height
-                        if y < 50:
+                        if y < 100:
                             c.showPage()
-                            c.setFont("DejaVuSans", 12)
                             y = height - 50
+                            for i, header in enumerate(headers):
+                                c.drawCentredString(x_positions[i] + col_widths[i] / 2, y, header)
+                            y -= line_height
+                            c.line(50, y, width - 50, y)
+                            y -= 10
 
             elif report_type == "Доходы":
-                c.drawString(50, y, "Дата   Доход")
+                headers = ["Дата", "Доход"]
+                x_positions = [50, 150]
+                for i, header in enumerate(headers):
+                    c.drawCentredString(x_positions[i] + col_widths_income[i] / 2, y, header)
                 y -= line_height
                 c.line(50, y, width - 50, y)
                 y -= 10
@@ -1534,13 +809,22 @@ class MainWindow(QMainWindow):
                     for o in orders:
                         income_by_date[o.order_date] = income_by_date.get(o.order_date, 0) + o.total_order_cost
                     for date, income in income_by_date.items():
-                        c.drawString(50, y, f"{date}")
-                        c.drawString(150, y, f"{income} руб")
+                        c.drawString(x_positions[0], y, f"{date}")
+                        c.drawRightString(x_positions[1] + col_widths_income[1], y, f"{income:>8.2f} руб")
                         y -= line_height
-                        if y < 50:
+                        if y < 100:
                             c.showPage()
-                            c.setFont("DejaVuSans", 12)
                             y = height - 50
+                            for i, header in enumerate(headers):
+                                c.drawCentredString(x_positions[i] + col_widths_income[i] / 2, y, header)
+                            y -= line_height
+                            c.line(50, y, width - 50, y)
+                            y -= 10
+
+            y = 70
+            c.drawString(50, y, "Руководитель: ____________/____________________")
+            y -= 20
+            c.drawString(50, y, "                           (подпись)       (расшифровка)")
 
             c.showPage()
             c.save()
@@ -1561,7 +845,8 @@ class MainWindow(QMainWindow):
         self.user_table = QTableWidget()
         self.user_table.setColumnCount(3)
         self.user_table.setHorizontalHeaderLabels(["Логин", "Пароль", "Роль"])
-        self.user_table.setSizeAdjustPolicy(QTableWidget.AdjustToContents)  # Адаптация размера таблицы
+        self.user_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.user_table.setSizeAdjustPolicy(QTableWidget.AdjustToContents)
         self.update_user_table()
         user_layout.addWidget(self.user_table)
         button_layout = QHBoxLayout()
@@ -1585,7 +870,8 @@ class MainWindow(QMainWindow):
                 self.user_table.setItem(i, 0, QTableWidgetItem(u.login))
                 self.user_table.setItem(i, 1, QTableWidgetItem("********"))
                 self.user_table.setItem(i, 2, QTableWidgetItem(u.role))
-            self.user_table.resizeColumnsToContents()  # Растягиваем ячейки по содержимому
+            self.user_table.resizeColumnsToContents()
+            self.user_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         except Exception as e:
             QMessageBox.critical(self, "Ошибка", f"Не удалось подключиться к базе данных: {str(e)}")
             self.user_table.setRowCount(0)
@@ -1736,3 +1022,714 @@ class MainWindow(QMainWindow):
             self.chart_label.setPixmap(QPixmap(chart_path))
         except Exception as e:
             QMessageBox.critical(self, "Ошибка", f"Не удалось построить график: {str(e)}")
+
+class AddUserDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Добавить пользователя")
+        self.setFixedSize(300, 200)
+        self.setWindowIcon(QIcon("icon.png"))
+        self.session = Session()
+
+        layout = QFormLayout()
+        self.login_input = QLineEdit()
+        self.password_input = QLineEdit()
+        self.password_input.setEchoMode(QLineEdit.Password)
+        self.role_combo = QComboBox()
+        self.role_combo.addItems([role.value for role in UserRole])
+
+        layout.addRow("Логин:", self.login_input)
+        layout.addRow("Пароль:", self.password_input)
+        layout.addRow("Роль:", self.role_combo)
+
+        button_layout = QHBoxLayout()
+        self.create_button = QPushButton("Добавить")
+        self.cancel_button = QPushButton("Отмена")
+        button_layout.addWidget(self.create_button)
+        button_layout.addWidget(self.cancel_button)
+        layout.addRow(button_layout)
+
+        self.create_button.clicked.connect(self.create_user)
+        self.cancel_button.clicked.connect(self.reject)
+        self.setLayout(layout)
+        self.setStyleSheet(APP_STYLE)
+
+    def create_user(self):
+        login = self.login_input.text().strip()
+        password = self.password_input.text().strip()
+        role = self.role_combo.currentText()
+
+        if not login or not password:
+            QMessageBox.warning(self, "Ошибка", "Заполните все поля")
+            return
+        if len(login) < 3:
+            QMessageBox.warning(self, "Ошибка", "Логин должен содержать минимум 3 символа")
+            return
+        if len(password) < 6:
+            QMessageBox.warning(self, "Ошибка", "Пароль должен содержать минимум 6 символов")
+            return
+
+        existing_user = self.session.query(User).filter_by(login=login).first()
+        if existing_user:
+            QMessageBox.warning(self, "Ошибка", "Логин уже занят")
+            return
+
+        hashed_password = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt())
+        user = User(login=login, password=hashed_password.decode('utf-8'), role=role)
+        self.session.add(user)
+        self.session.commit()
+        self.accept()
+
+class EditUserDialog(QDialog):
+    def __init__(self, parent=None, user_id=None):
+        super().__init__(parent)
+        self.setWindowTitle("Редактировать пользователя")
+        self.setFixedSize(300, 200)
+        self.setWindowIcon(QIcon("icon.png"))
+        self.session = Session()
+        self.user_id = user_id
+        self.user = self.session.query(User).filter_by(user_id=user_id).first()
+
+        layout = QFormLayout()
+        self.login_input = QLineEdit(self.user.login)
+        self.password_input = QLineEdit()
+        self.password_input.setPlaceholderText("Оставьте пустым, чтобы не менять")
+        self.password_input.setEchoMode(QLineEdit.Password)
+        self.role_combo = QComboBox()
+        self.role_combo.addItems([role.value for role in UserRole])
+        self.role_combo.setCurrentText(self.user.role)
+
+        layout.addRow("Логин:", self.login_input)
+        layout.addRow("Пароль:", self.password_input)
+        layout.addRow("Роль:", self.role_combo)
+
+        button_layout = QHBoxLayout()
+        self.save_button = QPushButton("Сохранить")
+        self.cancel_button = QPushButton("Отмена")
+        button_layout.addWidget(self.save_button)
+        button_layout.addWidget(self.cancel_button)
+        layout.addRow(button_layout)
+
+        self.save_button.clicked.connect(self.save_user)
+        self.cancel_button.clicked.connect(self.reject)
+        self.setLayout(layout)
+        self.setStyleSheet(APP_STYLE)
+
+    def save_user(self):
+        login = self.login_input.text().strip()
+        password = self.password_input.text().strip()
+        role = self.role_combo.currentText()
+
+        if not login:
+            QMessageBox.warning(self, "Ошибка", "Логин не может быть пустым")
+            return
+        if len(login) < 3:
+            QMessageBox.warning(self, "Ошибка", "Логин должен содержать минимум 3 символа")
+            return
+        if password and len(password) < 6:
+            QMessageBox.warning(self, "Ошибка", "Пароль должен содержать минимум 6 символов")
+            return
+
+        existing_user = self.session.query(User).filter(User.login == login, User.user_id != self.user_id).first()
+        if existing_user:
+            QMessageBox.warning(self, "Ошибка", "Логин уже занят")
+            return
+
+        self.user.login = login
+        if password:
+            self.user.password = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+        self.user.role = role
+        self.session.commit()
+        self.accept()
+
+class AddRawMaterialDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Добавить закупку")
+        self.setFixedSize(350, 300)
+        self.setWindowIcon(QIcon("icon.png"))
+        self.session = Session()
+
+        layout = QFormLayout()
+        self.name_input = QLineEdit()
+        self.quantity_spin = QDoubleSpinBox()
+        self.quantity_spin.setRange(0, 10000)
+        self.quantity_spin.setValue(10)
+        self.unit_combo = QComboBox()
+        self.unit_combo.addItems(["кг", "л", "шт"])
+        self.unit_combo.setCurrentText("кг")
+        self.cost_spin = QDoubleSpinBox()
+        self.cost_spin.setRange(0, 10000)
+        self.cost_spin.setValue(100)
+        self.cost_spin.setSuffix(" руб/ед")
+        self.purchase_date = QDateEdit()
+        self.purchase_date.setDate(QDate.currentDate())
+
+        layout.addRow("Название:", self.name_input)
+        layout.addRow("Количество:", self.quantity_spin)
+        layout.addRow("Единица измерения:", self.unit_combo)
+        layout.addRow("Стоимость:", self.cost_spin)
+        layout.addRow("Дата закупки:", self.purchase_date)
+
+        button_layout = QHBoxLayout()
+        self.create_button = QPushButton("Добавить")
+        self.cancel_button = QPushButton("Отмена")
+        button_layout.addWidget(self.create_button)
+        button_layout.addWidget(self.cancel_button)
+        layout.addRow(button_layout)
+
+        self.create_button.clicked.connect(self.create_raw_material)
+        self.cancel_button.clicked.connect(self.reject)
+        self.setLayout(layout)
+
+    def create_raw_material(self):
+        name = self.name_input.text().strip()
+        quantity = self.quantity_spin.value()
+        unit = self.unit_combo.currentText()
+        cost = self.cost_spin.value()
+        purchase_date = self.purchase_date.date().toString("yyyy-MM-dd")
+
+        if not name or quantity <= 0 or cost <= 0:
+            QMessageBox.warning(self, "Ошибка", "Заполните название, количество и стоимость корректно")
+            return
+
+        try:
+            material = RawMaterial(
+                name=name,
+                quantity=quantity,
+                unit=unit,
+                cost=cost,
+                purchase_date=purchase_date,
+                min_quantity=0
+            )
+            self.session.add(material)
+            self.session.commit()
+            self.accept()
+        except Exception as e:
+            self.session.rollback()
+            QMessageBox.critical(self, "Ошибка", f"Не удалось добавить закупку: {str(e)}")
+        finally:
+            self.session.close()
+
+class EditRawMaterialDialog(QDialog):
+    def __init__(self, parent=None, material_id=None, user_id=None):
+        super().__init__(parent)
+        self.setWindowTitle("Редактировать закупку")
+        self.setFixedSize(350, 300)
+        self.setWindowIcon(QIcon("icon.png"))
+        self.session = Session()
+        self.material = self.session.query(RawMaterial).filter_by(material_id=material_id).first()
+        self.user_id = user_id
+
+        layout = QFormLayout()
+        self.name_input = QLineEdit(self.material.name)
+        self.quantity_spin = QDoubleSpinBox()
+        self.quantity_spin.setRange(0, 10000)
+        self.quantity_spin.setValue(self.material.quantity)
+        self.unit_combo = QComboBox()
+        self.unit_combo.addItems(["кг", "л", "шт"])
+        self.unit_combo.setCurrentText(self.material.unit if self.material.unit else "кг")
+        self.cost_spin = QDoubleSpinBox()
+        self.cost_spin.setRange(0, 10000)
+        self.cost_spin.setValue(self.material.cost)
+        self.cost_spin.setSuffix(" руб/ед")
+        self.purchase_date = QDateEdit()
+        purchase_date_str = str(self.material.purchase_date)
+        self.purchase_date.setDate(QDate.fromString(purchase_date_str, "yyyy-MM-dd"))
+
+        layout.addRow("Название:", self.name_input)
+        layout.addRow("Количество:", self.quantity_spin)
+        layout.addRow("Единица измерения:", self.unit_combo)
+        layout.addRow("Стоимость:", self.cost_spin)
+        layout.addRow("Дата закупки:", self.purchase_date)
+
+        button_layout = QHBoxLayout()
+        self.save_button = QPushButton("Сохранить")
+        self.cancel_button = QPushButton("Отмена")
+        button_layout.addWidget(self.save_button)
+        button_layout.addWidget(self.cancel_button)
+        layout.addRow(button_layout)
+
+        self.save_button.clicked.connect(self.save_material)
+        self.cancel_button.clicked.connect(self.reject)
+        self.setLayout(layout)
+
+    def save_material(self):
+        name = self.name_input.text().strip()
+        quantity = self.quantity_spin.value()
+        unit = self.unit_combo.currentText()
+        new_cost = self.cost_spin.value()
+        purchase_date = self.purchase_date.date().toString("yyyy-MM-dd")
+
+        if not name or quantity <= 0 or new_cost <= 0:
+            QMessageBox.warning(self, "Ошибка", "Заполните название, количество и стоимость корректно")
+            return
+
+        try:
+            old_cost = self.material.cost
+            if old_cost != new_cost:
+                login = self.session.query(User).filter_by(user_id=self.user_id).first().login if self.user_id else "unknown"
+                log_price_change(self.session, "raw_materials", self.material.material_id, old_cost, new_cost, login)
+
+            self.material.name = name
+            self.material.quantity = quantity
+            self.material.unit = unit
+            self.material.cost = new_cost
+            self.material.purchase_date = purchase_date
+            self.session.commit()
+            self.accept()
+        except Exception as e:
+            self.session.rollback()
+            QMessageBox.critical(self, "Ошибка", f"Не удалось сохранить изменения: {str(e)}")
+        finally:
+            self.session.close()
+
+class AddRecipeDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Добавить рецепт")
+        self.setFixedSize(350, 200)
+        self.setWindowIcon(QIcon("icon.png"))
+        self.session = Session()
+
+        layout = QFormLayout()
+        self.name_input = QLineEdit()
+        self.description_input = QLineEdit()
+
+        layout.addRow("Название:", self.name_input)
+        layout.addRow("Описание:", self.description_input)
+
+        button_layout = QHBoxLayout()
+        self.create_button = QPushButton("Добавить")
+        self.cancel_button = QPushButton("Отмена")
+        button_layout.addWidget(self.create_button)
+        button_layout.addWidget(self.cancel_button)
+        layout.addRow(button_layout)
+
+        self.create_button.clicked.connect(self.create_recipe)
+        self.cancel_button.clicked.connect(self.reject)
+        self.setLayout(layout)
+        self.setStyleSheet(APP_STYLE)
+
+    def create_recipe(self):
+        name = self.name_input.text().strip()
+        description = self.description_input.text().strip()
+        if not name or not description:
+            QMessageBox.warning(self, "Ошибка", "Заполните все поля")
+            return
+        recipe = Recipe(name=name, description=description)
+        self.session.add(recipe)
+        self.session.commit()
+        self.accept()
+
+class EditRecipeDialog(QDialog):
+    def __init__(self, parent=None, recipe_id=None):
+        super().__init__(parent)
+        self.setWindowTitle("Редактировать рецепт")
+        self.setFixedSize(350, 200)
+        self.setWindowIcon(QIcon("icon.png"))
+        self.session = Session()
+        self.recipe = self.session.query(Recipe).filter_by(recipe_id=recipe_id).first()
+
+        layout = QFormLayout()
+        self.name_input = QLineEdit(self.recipe.name)
+        self.description_input = QLineEdit(self.recipe.description)
+
+        layout.addRow("Название:", self.name_input)
+        layout.addRow("Описание:", self.description_input)
+
+        button_layout = QHBoxLayout()
+        self.save_button = QPushButton("Сохранить")
+        self.cancel_button = QPushButton("Отмена")
+        button_layout.addWidget(self.save_button)
+        button_layout.addWidget(self.cancel_button)
+        layout.addRow(button_layout)
+
+        self.save_button.clicked.connect(self.save_recipe)
+        self.cancel_button.clicked.connect(self.reject)
+        self.setLayout(layout)
+        self.setStyleSheet(APP_STYLE)
+
+    def save_recipe(self):
+        name = self.name_input.text().strip()
+        description = self.description_input.text().strip()
+        if not name or not description:
+            QMessageBox.warning(self, "Ошибка", "Заполните все поля")
+            return
+        self.recipe.name = name
+        self.recipe.description = description
+        self.session.commit()
+        self.accept()
+
+class CreateBatchDialog(QDialog):
+    def __init__(self, parent=None, current_user_id=None):
+        super().__init__(parent)
+        self.setWindowTitle("Создать партию")
+        self.setFixedSize(350, 250)
+        self.setWindowIcon(QIcon("icon.png"))
+        self.session = Session()
+        self.current_user_id = current_user_id
+
+        layout = QFormLayout()
+        self.recipe_combo = QComboBox()
+        recipes = self.session.query(Recipe).all()
+        self.recipe_combo.addItems([r.name for r in recipes])
+        self.volume_spin = QDoubleSpinBox()
+        self.volume_spin.setRange(1, 1000)
+        self.volume_spin.setValue(250)
+        self.volume_spin.setSuffix(" л")
+        self.start_date = QDateEdit()
+        self.start_date.setDate(QDate.currentDate())
+        self.price_spin = QDoubleSpinBox()
+        self.price_spin.setRange(0, 10000)
+        self.price_spin.setValue(500)
+        self.price_spin.setSuffix(" руб/л")
+
+        layout.addRow("Рецепт:", self.recipe_combo)
+        layout.addRow("Объем:", self.volume_spin)
+        layout.addRow("Дата начала:", self.start_date)
+        layout.addRow("Цена за литр:", self.price_spin)
+
+        button_layout = QHBoxLayout()
+        self.create_button = QPushButton("Создать")
+        self.cancel_button = QPushButton("Отмена")
+        button_layout.addWidget(self.create_button)
+        button_layout.addWidget(self.cancel_button)
+        layout.addRow(button_layout)
+
+        self.create_button.clicked.connect(self.create_batch)
+        self.cancel_button.clicked.connect(self.reject)
+        self.setLayout(layout)
+        self.setStyleSheet(APP_STYLE)
+
+    def create_batch(self):
+        recipe_name = self.recipe_combo.currentText()
+        recipe = self.session.query(Recipe).filter_by(name=recipe_name).first()
+        volume = self.volume_spin.value()
+        price = self.price_spin.value()
+        if not recipe or volume <= 0 or price < 0:
+            QMessageBox.warning(self, "Ошибка", "Выберите рецепт, объем > 0, цена >= 0")
+            return
+
+        honey = self.session.query(RawMaterial).filter_by(name="Мед").first()
+        if not honey or honey.quantity < volume:
+            QMessageBox.warning(self, "Ошибка", f"Недостаточно меда (нужно {volume} кг, есть {honey.quantity if honey else 0} кг)")
+            return
+
+        batch = Batch(
+            recipe_id=recipe.recipe_id,
+            volume=volume,
+            start_date=self.start_date.date().toString("yyyy-MM-dd"),
+            end_date=self.start_date.date().addDays(14).toString("yyyy-MM-dd"),
+            status=BatchStatus.FERMENTING.value,
+            user_id=self.current_user_id,
+            price_per_liter=price
+        )
+        self.session.add(batch)
+        self.session.commit()
+
+        honey.quantity -= volume
+        self.session.commit()
+
+        self.accept()
+
+class EditBatchDialog(QDialog):
+    def __init__(self, parent=None, batch_id=None, user_id=None):
+        super().__init__(parent)
+        self.setWindowTitle("Редактировать партию")
+        self.setFixedSize(350, 250)
+        self.setWindowIcon(QIcon("icon.png"))
+        self.session = Session()
+        self.batch = self.session.query(Batch).filter_by(batch_id=batch_id).first()
+        self.user_id = user_id
+
+        layout = QFormLayout()
+        self.recipe_combo = QComboBox()
+        recipes = self.session.query(Recipe).all()
+        self.recipe_combo.addItems([r.name for r in recipes])
+        self.recipe_combo.setCurrentText(self.batch.recipe.name)
+        self.volume_spin = QDoubleSpinBox()
+        self.volume_spin.setRange(1, 1000)
+        self.volume_spin.setValue(self.batch.volume)
+        self.volume_spin.setSuffix(" л")
+        self.start_date = QDateEdit()
+        self.start_date.setDate(QDate.fromString(self.batch.start_date, "yyyy-MM-dd"))
+        self.price_spin = QDoubleSpinBox()
+        self.price_spin.setRange(0, 10000)
+        self.price_spin.setValue(self.batch.price_per_liter)
+        self.price_spin.setSuffix(" руб/л")
+
+        layout.addRow("Рецепт:", self.recipe_combo)
+        layout.addRow("Объем:", self.volume_spin)
+        layout.addRow("Дата начала:", self.start_date)
+        layout.addRow("Цена за литр:", self.price_spin)
+
+        button_layout = QHBoxLayout()
+        self.save_button = QPushButton("Сохранить")
+        self.cancel_button = QPushButton("Отмена")
+        button_layout.addWidget(self.save_button)
+        button_layout.addWidget(self.cancel_button)
+        layout.addRow(button_layout)
+
+        self.save_button.clicked.connect(self.save_batch)
+        self.cancel_button.clicked.connect(self.reject)
+        self.setLayout(layout)
+        self.setStyleSheet(APP_STYLE)
+
+    def save_batch(self):
+        recipe_name = self.recipe_combo.currentText()
+        recipe = self.session.query(Recipe).filter_by(name=recipe_name).first()
+        volume = self.volume_spin.value()
+        new_price = self.price_spin.value()
+        start_date = self.start_date.date().toString("yyyy-MM-dd")
+        if not recipe or volume <= 0 or new_price < 0:
+            QMessageBox.warning(self, "Ошибка", "Выберите рецепт, объем > 0, цена >= 0")
+            return
+
+        try:
+            old_price = self.batch.price_per_liter
+            if old_price != new_price:
+                login = self.session.query(User).filter_by(user_id=self.user_id).first().login if self.user_id else "unknown"
+                log_price_change(self.session, "batches", self.batch.batch_id, old_price, new_price, login)
+
+            self.batch.recipe_id = recipe.recipe_id
+            self.batch.volume = volume
+            self.batch.start_date = start_date
+            self.batch.end_date = self.start_date.date().addDays(14).toString("yyyy-MM-dd")
+            self.batch.price_per_liter = new_price
+            self.session.commit()
+            self.accept()
+        except Exception as e:
+            self.session.rollback()
+            QMessageBox.critical(self, "Ошибка", f"Не удалось сохранить изменения: {str(e)}")
+        finally:
+            self.session.close()
+
+class AddClientDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Добавить клиента")
+        self.setFixedSize(350, 250)
+        self.setWindowIcon(QIcon("icon.png"))
+        self.session = Session()
+
+        layout = QFormLayout()
+        self.name_input = QLineEdit()
+        self.type_combo = QComboBox()
+        self.type_combo.addItems([t.value for t in ClientType])
+        self.contact_input = QLineEdit()
+        self.inn_input = QLineEdit()
+
+        layout.addRow("Имя:", self.name_input)
+        layout.addRow("Тип:", self.type_combo)
+        layout.addRow("Контакт:", self.contact_input)
+        layout.addRow("ИНН (опционально):", self.inn_input)
+
+        button_layout = QHBoxLayout()
+        self.create_button = QPushButton("Добавить")
+        self.cancel_button = QPushButton("Отмена")
+        button_layout.addWidget(self.create_button)
+        button_layout.addWidget(self.cancel_button)
+        layout.addRow(button_layout)
+
+        self.create_button.clicked.connect(self.create_client)
+        self.cancel_button.clicked.connect(self.reject)
+        self.setLayout(layout)
+        self.setStyleSheet(APP_STYLE)
+
+    def create_client(self):
+        name = self.name_input.text().strip()
+        type_ = self.type_combo.currentText()
+        contact = self.contact_input.text().strip()
+        inn = self.inn_input.text().strip() or None
+        if not name or not contact:
+            QMessageBox.warning(self, "Ошибка", "Заполните имя и контакт")
+            return
+        client = Client(name=name, type=type_, contact=contact, inn=inn)
+        self.session.add(client)
+        self.session.commit()
+        self.accept()
+
+class EditClientDialog(QDialog):
+    def __init__(self, parent=None, client_id=None):
+        super().__init__(parent)
+        self.setWindowTitle("Редактировать клиента")
+        self.setFixedSize(350, 250)
+        self.setWindowIcon(QIcon("icon.png"))
+        self.session = Session()
+        self.client = self.session.query(Client).filter_by(client_id=client_id).first()
+
+        layout = QFormLayout()
+        self.name_input = QLineEdit(self.client.name)
+        self.type_combo = QComboBox()
+        self.type_combo.addItems([t.value for t in ClientType])
+        self.type_combo.setCurrentText(self.client.type)
+        self.contact_input = QLineEdit(self.client.contact)
+        self.inn_input = QLineEdit(self.client.inn or "")
+
+        layout.addRow("Имя:", self.name_input)
+        layout.addRow("Тип:", self.type_combo)
+        layout.addRow("Контакт:", self.contact_input)
+        layout.addRow("ИНН (опционально):", self.inn_input)
+
+        button_layout = QHBoxLayout()
+        self.save_button = QPushButton("Сохранить")
+        self.cancel_button = QPushButton("Отмена")
+        button_layout.addWidget(self.save_button)
+        button_layout.addWidget(self.cancel_button)
+        layout.addRow(button_layout)
+
+        self.save_button.clicked.connect(self.save_client)
+        self.cancel_button.clicked.connect(self.reject)
+        self.setLayout(layout)
+        self.setStyleSheet(APP_STYLE)
+
+    def save_client(self):
+        name = self.name_input.text().strip()
+        type_ = self.type_combo.currentText()
+        contact = self.contact_input.text().strip()
+        inn = self.inn_input.text().strip() or None
+        if not name or not contact:
+            QMessageBox.warning(self, "Ошибка", "Заполните имя и контакт")
+            return
+        self.client.name = name
+        self.client.type = type_
+        self.client.contact = contact
+        self.client.inn = inn
+        self.session.commit()
+        self.accept()
+
+class AddOrderDialog(QDialog):
+    def __init__(self, parent=None, current_user_id=None):
+        super().__init__(parent)
+        self.setWindowTitle("Добавить заказ")
+        self.setFixedSize(600, 500)
+        self.setWindowIcon(QIcon("icon.png"))
+        self.session = Session()
+        self.current_user_id = current_user_id
+
+        layout = QVBoxLayout()
+        self.client_combo = QComboBox()
+        clients = self.session.query(Client).all()
+        self.client_combo.addItems([c.name for c in clients])
+        layout.addWidget(QLabel("Клиент:"))
+        layout.addWidget(self.client_combo)
+
+        self.items_table = QTableWidget(0, 3)
+        self.items_table.setHorizontalHeaderLabels(["Медовуха", "Объем (л)", "Стоимость (руб)"])
+        self.items_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.items_table.setSizeAdjustPolicy(QTableWidget.AdjustToContents)
+        layout.addWidget(QLabel("Позиции:"))
+        layout.addWidget(self.items_table)
+
+        self.add_item_button = QPushButton("Добавить позицию")
+        self.add_item_button.clicked.connect(self.add_item)
+        layout.addWidget(self.add_item_button)
+
+        self.total_label = QLabel("Общая стоимость: 0 руб")
+        layout.addWidget(self.total_label)
+
+        self.date_edit = QDateEdit()
+        self.date_edit.setDate(QDate.currentDate())
+        layout.addWidget(QLabel("Дата:"))
+        layout.addWidget(self.date_edit)
+
+        button_layout = QHBoxLayout()
+        self.create_button = QPushButton("Создать")
+        self.cancel_button = QPushButton("Отмена")
+        button_layout.addWidget(self.create_button)
+        button_layout.addWidget(self.cancel_button)
+        layout.addLayout(button_layout)
+
+        self.create_button.clicked.connect(self.create_order)
+        self.cancel_button.clicked.connect(self.reject)
+        self.setLayout(layout)
+
+    def add_item(self):
+        row_position = self.items_table.rowCount()
+        self.items_table.insertRow(row_position)
+        
+        product_combo = QComboBox()
+        if not hasattr(self, 'products'):
+            finished_products = self.session.query(FinishedProduct).join(Batch).join(Recipe).all()
+            self.products = [
+                (fp.product_id, self.session.query(Recipe).filter_by(recipe_id=fp.batch.recipe_id).first().name, fp.available_volume, fp.price_per_liter)
+                for fp in finished_products
+            ]
+        product_combo.addItems([p[1] for p in self.products])
+        product_combo.currentIndexChanged.connect(lambda: self.update_cost(row_position))
+        self.items_table.setCellWidget(row_position, 0, product_combo)
+        
+        volume_input = QDoubleSpinBox()
+        volume_input.setRange(1, 1000)
+        volume_input.setValue(10)
+        volume_input.valueChanged.connect(lambda: self.update_cost(row_position))
+        self.items_table.setCellWidget(row_position, 1, volume_input)
+        
+        cost_item = QTableWidgetItem("0 руб")
+        self.items_table.setItem(row_position, 2, cost_item)
+        
+        self.update_cost(row_position)
+
+    def update_cost(self, row):
+        volume = self.items_table.cellWidget(row, 1).value()
+        product_combo = self.items_table.cellWidget(row, 0)
+        product_index = product_combo.currentIndex()
+        if product_index >= 0 and product_index < len(self.products):
+            _, _, available_volume, price_per_liter = self.products[product_index]
+            if volume > available_volume:
+                QMessageBox.warning(self, "Ошибка", f"Доступный объем: {available_volume} л")
+                volume_input = self.items_table.cellWidget(row, 1)
+                volume_input.setValue(min(volume, available_volume))
+                return
+            cost = volume * price_per_liter
+            self.items_table.setItem(row, 2, QTableWidgetItem(f"{cost:.2f} руб"))
+            self.update_total()
+
+    def update_total(self):
+        total = 0
+        for row in range(self.items_table.rowCount()):
+            cost_item = self.items_table.item(row, 2)
+            if cost_item and cost_item.text().replace(" руб", "").strip():
+                total += float(cost_item.text().replace(" руб", ""))
+        self.total_label.setText(f"Общая стоимость: {total:.2f} руб")
+
+    def create_order(self):
+        client_name = self.client_combo.currentText()
+        client = self.session.query(Client).filter_by(name=client_name).first()
+        order_date = self.date_edit.date().toString("yyyy-MM-dd")
+        total_cost = float(self.total_label.text().replace("Общая стоимость: ", "").replace(" руб", ""))
+
+        if self.items_table.rowCount() == 0:
+            QMessageBox.warning(self, "Ошибка", "Добавьте хотя бы одну позицию")
+            return
+
+        order = Order(
+            client_id=client.client_id,
+            order_date=order_date,
+            total_order_cost=total_cost,
+            status=OrderStatus.PENDING.value,
+            user_id=self.current_user_id
+        )
+        self.session.add(order)
+        self.session.commit()
+
+        for row in range(self.items_table.rowCount()):
+            product_combo = self.items_table.cellWidget(row, 0)
+            volume_input = self.items_table.cellWidget(row, 1)
+            product_index = product_combo.currentIndex()
+            if product_index >= 0 and product_index < len(self.products):
+                product_id, _, _, _ = self.products[product_index]
+                volume = volume_input.value()
+                order_item = OrderItem(
+                    order_id=order.order_id,
+                    product_id=product_id,
+                    volume=volume
+                )
+                self.session.add(order_item)
+                product = self.session.query(FinishedProduct).filter_by(product_id=product_id).first()
+                if product:
+                    product.available_volume -= volume
+                    self.session.commit()
+        self.session.commit()
+        self.accept()
